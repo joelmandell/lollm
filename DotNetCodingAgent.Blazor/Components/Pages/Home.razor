@@ -1,0 +1,110 @@
+﻿@page "/"
+@inject AgentApiClient ApiClient
+
+<PageTitle>Home</PageTitle>
+
+<h1>DotNet Coding Agent</h1>
+
+<p>Chat with the model or run an agentic code generation task grounded in indexed .NET and C# docs.</p>
+
+<div class="mb-4">
+    <h3>Chat</h3>
+    <div class="mb-3">
+        <label class="form-label">Prompt</label>
+        <textarea class="form-control" @bind="chatPrompt" rows="4"></textarea>
+    </div>
+    <button class="btn btn-primary" @onclick="RunChatAsync" disabled="@isBusy">Ask</button>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(chatAnswer))
+{
+    <div class="card mb-4">
+        <div class="card-header">Chat Answer</div>
+        <div class="card-body">
+            <pre class="mb-0">@chatAnswer</pre>
+        </div>
+    </div>
+}
+
+<div class="mb-4">
+    <h3>Generate Code</h3>
+    <div class="mb-3">
+        <label class="form-label">Task</label>
+        <textarea class="form-control" @bind="codeTask" rows="6"></textarea>
+    </div>
+    <button class="btn btn-success" @onclick="RunCodeGenerationAsync" disabled="@isBusy">Generate</button>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(codePlan))
+{
+    <div class="card mb-3">
+        <div class="card-header">Plan</div>
+        <div class="card-body">
+            <pre class="mb-0">@codePlan</pre>
+        </div>
+    </div>
+}
+
+@if (!string.IsNullOrWhiteSpace(codeOutput))
+{
+    <div class="card">
+        <div class="card-header">Generated Code + Notes</div>
+        <div class="card-body">
+            <pre class="mb-0">@codeOutput</pre>
+        </div>
+    </div>
+}
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger mt-4">@error</div>
+}
+
+@code {
+    private string chatPrompt = "How should I design a resilient HttpClient in .NET 10?";
+    private string chatAnswer = string.Empty;
+    private string codeTask = "Create a C# service that retries HTTP calls with exponential backoff and cancellation support.";
+    private string codePlan = string.Empty;
+    private string codeOutput = string.Empty;
+    private string error = string.Empty;
+    private bool isBusy;
+
+    private async Task RunChatAsync()
+    {
+        isBusy = true;
+        error = string.Empty;
+        try
+        {
+            var response = await ApiClient.ChatAsync(new ChatRequest(chatPrompt));
+            chatAnswer = response?.Answer ?? "No answer returned.";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task RunCodeGenerationAsync()
+    {
+        isBusy = true;
+        error = string.Empty;
+        try
+        {
+            var response = await ApiClient.GenerateCodeAsync(new GenerateCodeRequest(codeTask));
+            codePlan = response?.Plan ?? "No plan returned.";
+            codeOutput = response?.Code ?? "No code returned.";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+}

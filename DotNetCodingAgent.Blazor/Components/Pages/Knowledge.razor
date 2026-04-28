@@ -1,0 +1,111 @@
+@page "/knowledge"
+@inject AgentApiClient ApiClient
+
+<PageTitle>Knowledge Sources</PageTitle>
+
+<h1>Knowledge Sources</h1>
+
+<div class="mb-3">
+    <label class="form-label">Add URL</label>
+    <input class="form-control" @bind="newUrl" />
+</div>
+<div class="d-flex gap-2 mb-4">
+    <button class="btn btn-primary" @onclick="AddSourceAsync" disabled="@isBusy">Add Source</button>
+    <button class="btn btn-secondary" @onclick="IngestAllAsync" disabled="@isBusy">Ingest All</button>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(status))
+{
+    <div class="alert alert-info">@status</div>
+}
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger">@error</div>
+}
+
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>Title</th>
+            <th>URL</th>
+            <th>Last Indexed</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var source in sources)
+        {
+            <tr>
+                <td>@source.Title</td>
+                <td><a href="@source.Url" target="_blank">@source.Url</a></td>
+                <td>@(source.LastIndexedUtc?.ToString("u") ?? "Never")</td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@code {
+    private readonly List<KnowledgeSourceDto> sources = [];
+    private string newUrl = "https://learn.microsoft.com/dotnet/csharp/language-reference/operators/";
+    private string status = string.Empty;
+    private string error = string.Empty;
+    private bool isBusy;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshSourcesAsync();
+    }
+
+    private async Task AddSourceAsync()
+    {
+        if (string.IsNullOrWhiteSpace(newUrl))
+        {
+            return;
+        }
+
+        isBusy = true;
+        error = string.Empty;
+        status = string.Empty;
+        try
+        {
+            await ApiClient.AddSourceAsync(newUrl);
+            status = "Source added.";
+            await RefreshSourcesAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task IngestAllAsync()
+    {
+        isBusy = true;
+        error = string.Empty;
+        status = string.Empty;
+        try
+        {
+            var response = await ApiClient.IngestAsync(null, true);
+            status = response?.Message ?? "Ingest completed.";
+            await RefreshSourcesAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task RefreshSourcesAsync()
+    {
+        sources.Clear();
+        sources.AddRange(await ApiClient.GetSourcesAsync());
+    }
+}

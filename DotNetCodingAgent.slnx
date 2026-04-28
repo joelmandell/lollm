@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="DotNetCodingAgent.Api/DotNetCodingAgent.Api.csproj" />
+  <Project Path="DotNetCodingAgent.Blazor/DotNetCodingAgent.Blazor.csproj" />
+  <Project Path="DotNetCodingAgent.Cli/DotNetCodingAgent.Cli.csproj" />
+  <Project Path="DotNetCodingAgent.Contracts/DotNetCodingAgent.Contracts.csproj" />
+</Solution>
