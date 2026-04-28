@@ -1,0 +1,23 @@
+{
+  "profile": "scale-up-v1",
+  "description": "Bigger local training profile for iterative quality gains toward codex-like coding behavior.",
+  "tokenizer": "o200k_base",
+  "extra_corpus": "data/csharp_instruction_seed.txt",
+  "extra_weight": 8,
+  "vocab_size": 48000,
+  "seq_len": 512,
+  "micro_batch_size": 8,
+  "grad_accum_steps": 16,
+  "steps": 12000,
+  "d_model": 1024,
+  "n_heads": 16,
+  "n_layers": 18,
+  "dropout": 0.1,
+  "lr": 0.0002,
+  "log_every": 50,
+  "eval_every": 250,
+  "eval_steps": 16,
+  "save_every": 250,
+  "amp": true,
+  "resume": true
+}

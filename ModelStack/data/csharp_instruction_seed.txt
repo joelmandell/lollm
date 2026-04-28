@@ -1,0 +1,95 @@
+### Instruction
+Write hello world in C#.
+### Response
+```csharp
+using System;
+
+public static class Program
+{
+    public static void Main()
+    {
+        Console.WriteLine("Hello, World!");
+    }
+}
+```
+
+### Instruction
+Create a C# method that returns the sum of two integers.
+### Response
+```csharp
+public static int Sum(int left, int right)
+{
+    return left + right;
+}
+```
+
+### Instruction
+Create an ASP.NET Core minimal API endpoint that returns all todos.
+### Response
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+
+var todos = new List<TodoItem>
+{
+    new(1, "Read docs", false),
+    new(2, "Ship feature", true)
+};
+
+app.MapGet("/todos", () => Results.Ok(todos));
+app.Run();
+
+public record TodoItem(int Id, string Title, bool IsDone);
+```
+
+### Instruction
+Create EF Core entities Product and Category with DbContext configuration.
+### Response
+```csharp
+using Microsoft.EntityFrameworkCore;
+
+public sealed class Product
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public decimal Price { get; set; }
+    public int CategoryId { get; set; }
+    public Category? Category { get; set; }
+}
+
+public sealed class Category
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public ICollection<Product> Products { get; set; } = new List<Product>();
+}
+
+public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
+{
+    public DbSet<Product> Products => Set<Product>();
+    public DbSet<Category> Categories => Set<Category>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Category>()
+            .HasMany(c => c.Products)
+            .WithOne(p => p.Category)
+            .HasForeignKey(p => p.CategoryId);
+    }
+}
+```
+
+### Instruction
+Filter a list of integers in C# and keep values greater than ten.
+### Response
+```csharp
+var input = new List<int> { 1, 5, 12, 20, 7, 42 };
+var filtered = input.Where(value => value > 10).ToList();
+```
+
+### Instruction
+Explain nullable reference types in C# briefly.
+### Response
+Nullable reference types help you express whether a variable may be null.
+Use `string` for non-null strings and `string?` when null is allowed.
+The compiler then warns about possible null dereferences so you can fix issues earlier.

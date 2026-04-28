@@ -1,0 +1,7 @@
+{"id":"csharp-hello-world","prompt":"Write hello world in C#","expects":["Console.WriteLine","using System"],"forbids":["console.log","function "],"language":"csharp"}
+{"id":"csharp-list-filter","prompt":"In C#, filter a list of ints and keep values greater than 10","expects":["List<int>","Where("],"forbids":["Array.prototype.filter","=> item > 10 // js"],"language":"csharp"}
+{"id":"efcore-dbcontext","prompt":"Create an EF Core DbContext for Product and Category entities in C#","expects":["DbContext","DbSet<Product>","OnModelCreating"],"forbids":["sequelize","mongoose","TypeORM"],"language":"csharp"}
+{"id":"aspnet-minimal-api","prompt":"Create a minimal API endpoint in ASP.NET Core that returns all todos","expects":["MapGet","Results.Ok","WebApplication"],"forbids":["express()","app.get("],"language":"csharp"}
+{"id":"xunit-basic-test","prompt":"Write an xUnit test in C# that verifies 2 + 3 equals 5","expects":["[Fact]","Assert.Equal","using Xunit"],"forbids":["jest","describe(","it("],"language":"csharp"}
+{"id":"async-httpclient","prompt":"In C#, write an async method that uses HttpClient to get string content from a URL","expects":["async Task<string>","HttpClient","await"],"forbids":["fetch(","axios","Promise"],"language":"csharp"}
+{"id":"linq-groupby","prompt":"Use LINQ in C# to group orders by customer and compute total amount","expects":["GroupBy","Select","ToList"],"forbids":["reduce(","lodash"],"language":"csharp"}
