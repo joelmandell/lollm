@@ -70,3 +70,32 @@ public sealed record BootstrapTrainingResponse(
     int SourceCount,
     OperationResponse Ingestion,
     TrainModelResponse Training);
+
+public sealed record ModelBenchmarkRequest(
+    int MaxCases = 10);
+
+public sealed record ModelBenchmarkCaseResult(
+    string Prompt,
+    int Score,
+    string Notes);
+
+public sealed record ModelBenchmarkResponse(
+    int AverageScore,
+    int CaseCount,
+    IReadOnlyList<ModelBenchmarkCaseResult> Results);
+
+public sealed record ExportCorpusRequest(
+    bool IncludeJsonl = true,
+    bool IncludeText = true);
+
+public sealed record ExportCorpusResponse(
+    bool Success,
+    int ChunkCount,
+    string? JsonlPath,
+    string? TextPath,
+    string Message);
+
+public sealed record BackendStatusResponse(
+    string Provider,
+    bool TransformerHealthy,
+    string TransformerBaseUrl);

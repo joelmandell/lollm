@@ -6,8 +6,11 @@ using Microsoft.Extensions.Options;
 
 namespace DotNetCodingAgent.Api.Services;
 
-public sealed class LocalMarkovLlmClient(IOptions<LocalModelOptions> options) : ITrainableLlmClient
+public sealed class LocalMarkovLlmClient(
+    IOptions<LocalModelOptions> options,
+    PromptIntelligenceService promptIntelligence) : ITrainableLlmClient
 {
+    private const char PairSeparator = '\u001F';
     private static readonly Regex TokenRegex = new(
         "\\p{L}[\\p{L}\\p{N}_]*|\\p{N}+(?:\\.\\p{N}+)?|==|!=|<=|>=|=>|->|\\+\\+|--|&&|\\|\\||[{}()\\[\\];,.:<>+\\-*/=%!?]",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -17,6 +20,7 @@ public sealed class LocalMarkovLlmClient(IOptions<LocalModelOptions> options) : 
     private readonly object _gate = new();
     private readonly LocalModelOptions _options = options.Value;
     private Dictionary<string, Dictionary<string, int>> _transitions = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, Dictionary<string, int>> _pairTransitions = new(StringComparer.OrdinalIgnoreCase);
     private int _totalTokens;
     private DateTimeOffset? _lastTrainedUtc;
 
@@ -28,82 +32,71 @@ public sealed class LocalMarkovLlmClient(IOptions<LocalModelOptions> options) : 
         var primaryRequest = ExtractPrimaryRequest(userPrompt);
         var promptTokens = Tokenize($"{systemPrompt}\n{primaryRequest}");
         Dictionary<string, Dictionary<string, int>> transitions;
+        Dictionary<string, Dictionary<string, int>> pairTransitions;
         int maxTokens;
 
         lock (_gate)
         {
             transitions = _transitions;
+            pairTransitions = _pairTransitions;
             maxTokens = _options.MaxGeneratedTokens;
         }
 
-        if (transitions.Count == 0)
+        if (transitions.Count == 0 && pairTransitions.Count == 0)
         {
             return "Local model is not trained yet. Add sources, ingest them, then run model training.";
         }
 
-        if (LooksLikePlanningPrompt(primaryRequest))
+        var analysis = promptIntelligence.Analyze(primaryRequest);
+
+        if (analysis.Intent == PromptIntent.Planning)
         {
             return BuildPlanningResponse(primaryRequest);
         }
 
-        if (LooksLikeExplanationPrompt(primaryRequest))
+        if (analysis.Intent == PromptIntent.Explanation)
         {
             return BuildExplanationResponse(primaryRequest);
         }
 
-        if (LooksLikeCodePrompt(primaryRequest))
+        if (analysis.Intent == PromptIntent.CodeGeneration || analysis.WantsHelloWorld || analysis.Language != PromptLanguage.Unknown)
         {
-            return BuildCodeResponse(primaryRequest);
+            return BuildCodeResponse(primaryRequest, analysis);
         }
 
-        var current = PickSeed(promptTokens, transitions);
-        var generated = new List<string> { current };
+        var first = PickSeed(promptTokens, transitions);
+        var generated = new List<string> { first };
         var random = new Random(unchecked(Environment.TickCount * 397) ^ promptTokens.Count);
 
-        for (var i = 0; i < maxTokens; i++)
+        if (transitions.TryGetValue(first, out var nextsForFirst) && nextsForFirst.Count > 0 && generated.Count < maxTokens)
+        {
+            generated.Add(SampleNext(nextsForFirst, random));
+        }
+
+        while (generated.Count < maxTokens)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!transitions.TryGetValue(current, out var nexts) || nexts.Count == 0)
+            var next = TrySampleNextWithContext(generated, pairTransitions, transitions, random);
+            if (next is null)
             {
                 break;
             }
 
-            current = SampleNext(nexts, random);
-            generated.Add(current);
+            generated.Add(next);
         }
 
         var body = string.Join(' ', generated);
         return $"[LocalModel]\nI understood your request as: \"{primaryRequest}\".\n\n{body}";
     }
 
-    private static bool LooksLikeCodePrompt(string prompt)
+    private static string BuildCodeResponse(string prompt, PromptAnalysis analysis)
     {
-        var lower = prompt.ToLowerInvariant();
-        return lower.Contains("c#")
-            || lower.Contains("javascript")
-            || lower.Contains(" js ")
-            || lower.Contains("dotnet")
-            || lower.Contains(".net")
-            || lower.Contains("ef core")
-            || lower.Contains("minimal api")
-            || lower.Contains("endpoint")
-            || lower.Contains("generate code")
-            || lower.Contains("task:")
-            || lower.Contains("snippet")
-            || lower.Contains("example")
-            || lower.Contains("hello world");
-    }
-
-    private static string BuildCodeResponse(string prompt)
-    {
-        var lower = prompt.ToLowerInvariant();
-        var languagePreference = DetectLanguagePreference(lower);
-        if (IsHelloWorldPrompt(lower))
+        if (analysis.WantsHelloWorld)
         {
-            return BuildHelloWorldResponse(prompt, languagePreference);
+            return BuildHelloWorldResponse(prompt, analysis.Language);
         }
 
-        if (languagePreference == LanguagePreference.JavaScript)
+        if (analysis.Language == PromptLanguage.JavaScript)
         {
             return BuildJavaScriptResponse(prompt);
         }
@@ -111,14 +104,9 @@ public sealed class LocalMarkovLlmClient(IOptions<LocalModelOptions> options) : 
         return BuildCSharpResponse(prompt);
     }
 
-    private static bool IsHelloWorldPrompt(string lowerPrompt)
+    private static string BuildHelloWorldResponse(string prompt, PromptLanguage languagePreference)
     {
-        return lowerPrompt.Contains("hello world") || lowerPrompt.Contains("hello-world");
-    }
-
-    private static string BuildHelloWorldResponse(string prompt, LanguagePreference languagePreference)
-    {
-        if (languagePreference == LanguagePreference.JavaScript)
+        if (languagePreference == PromptLanguage.JavaScript)
         {
             return $"""
                 [LocalModel]
@@ -130,7 +118,7 @@ public sealed class LocalMarkovLlmClient(IOptions<LocalModelOptions> options) : 
                 """;
         }
 
-        if (languagePreference == LanguagePreference.CSharp)
+        if (languagePreference == PromptLanguage.CSharp)
         {
             return $"""
                 [LocalModel]
@@ -167,54 +155,6 @@ public sealed class LocalMarkovLlmClient(IOptions<LocalModelOptions> options) : 
             "}\n\n" +
             "console.log(greet(\"World\"));\n" +
             "```\n";
-    }
-
-    private static LanguagePreference DetectLanguagePreference(string lowerPrompt)
-    {
-        var mentionsCSharp = lowerPrompt.Contains("c#")
-            || lowerPrompt.Contains("csharp")
-            || lowerPrompt.Contains(".net")
-            || lowerPrompt.Contains("dotnet");
-        var mentionsJavaScript = lowerPrompt.Contains("javascript")
-            || lowerPrompt.Contains(" js ")
-            || lowerPrompt.Contains("node")
-            || lowerPrompt.Contains("typescript");
-
-        if (mentionsCSharp && mentionsJavaScript)
-        {
-            return LanguagePreference.Both;
-        }
-
-        if (mentionsCSharp)
-        {
-            return LanguagePreference.CSharp;
-        }
-
-        if (mentionsJavaScript)
-        {
-            return LanguagePreference.JavaScript;
-        }
-
-        return LanguagePreference.Unknown;
-    }
-
-    private static bool LooksLikePlanningPrompt(string prompt)
-    {
-        var lower = prompt.ToLowerInvariant();
-        return lower.Contains("plan")
-            || lower.Contains("step-by-step")
-            || lower.Contains("approach")
-            || lower.Contains("design");
-    }
-
-    private static bool LooksLikeExplanationPrompt(string prompt)
-    {
-        var lower = prompt.ToLowerInvariant();
-        return lower.Contains("explain")
-            || lower.Contains("why")
-            || lower.Contains("what is")
-            || lower.Contains("difference")
-            || lower.Contains("how does");
     }
 
     private static string BuildCSharpResponse(string prompt)
@@ -407,11 +347,16 @@ public sealed class LocalMarkovLlmClient(IOptions<LocalModelOptions> options) : 
         var boundedEpochs = Math.Clamp(epochs, 1, 20);
 
         Dictionary<string, Dictionary<string, int>> transitions;
+        Dictionary<string, Dictionary<string, int>> pairTransitions;
         int totalTokens;
 
         lock (_gate)
         {
             transitions = _transitions.ToDictionary(
+                pair => pair.Key,
+                pair => new Dictionary<string, int>(pair.Value, StringComparer.OrdinalIgnoreCase),
+                StringComparer.OrdinalIgnoreCase);
+            pairTransitions = _pairTransitions.ToDictionary(
                 pair => pair.Key,
                 pair => new Dictionary<string, int>(pair.Value, StringComparer.OrdinalIgnoreCase),
                 StringComparer.OrdinalIgnoreCase);
@@ -448,6 +393,25 @@ public sealed class LocalMarkovLlmClient(IOptions<LocalModelOptions> options) : 
 
                     nexts.TryGetValue(next, out var count);
                     nexts[next] = count + 1;
+
+                    if (i < tokens.Count - 2)
+                    {
+                        var pairKey = BuildPairKey(tokens[i], tokens[i + 1]);
+                        if (!pairTransitions.TryGetValue(pairKey, out var pairNexts))
+                        {
+                            if (pairTransitions.Count >= _options.MaxVocabulary * 8)
+                            {
+                                continue;
+                            }
+
+                            pairNexts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                            pairTransitions[pairKey] = pairNexts;
+                        }
+
+                        var pairCandidate = tokens[i + 2];
+                        pairNexts.TryGetValue(pairCandidate, out var pairCount);
+                        pairNexts[pairCandidate] = pairCount + 1;
+                    }
                 }
             }
         }
@@ -455,6 +419,7 @@ public sealed class LocalMarkovLlmClient(IOptions<LocalModelOptions> options) : 
         lock (_gate)
         {
             _transitions = transitions;
+            _pairTransitions = pairTransitions;
             _totalTokens = totalTokens;
             _lastTrainedUtc = DateTimeOffset.UtcNow;
         }
@@ -498,6 +463,11 @@ public sealed class LocalMarkovLlmClient(IOptions<LocalModelOptions> options) : 
                     pair => pair.Key,
                     pair => new Dictionary<string, int>(pair.Value, StringComparer.OrdinalIgnoreCase),
                     StringComparer.OrdinalIgnoreCase);
+            _pairTransitions = (persisted.PairTransitions ?? new Dictionary<string, Dictionary<string, int>>(StringComparer.OrdinalIgnoreCase))
+                .ToDictionary(
+                    pair => pair.Key,
+                    pair => new Dictionary<string, int>(pair.Value, StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase);
             _totalTokens = persisted.TotalTokens;
             _lastTrainedUtc = persisted.LastTrainedUtc;
         }
@@ -513,6 +483,10 @@ public sealed class LocalMarkovLlmClient(IOptions<LocalModelOptions> options) : 
                 TotalTokens = _totalTokens,
                 LastTrainedUtc = _lastTrainedUtc,
                 Transitions = _transitions.ToDictionary(
+                    pair => pair.Key,
+                    pair => new Dictionary<string, int>(pair.Value, StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase),
+                PairTransitions = _pairTransitions.ToDictionary(
                     pair => pair.Key,
                     pair => new Dictionary<string, int>(pair.Value, StringComparer.OrdinalIgnoreCase),
                     StringComparer.OrdinalIgnoreCase)
@@ -590,18 +564,39 @@ public sealed class LocalMarkovLlmClient(IOptions<LocalModelOptions> options) : 
         return nexts.Keys.First();
     }
 
+    private static string BuildPairKey(string first, string second) => $"{first}{PairSeparator}{second}";
+
+    private static string? TrySampleNextWithContext(
+        IReadOnlyList<string> generated,
+        Dictionary<string, Dictionary<string, int>> pairTransitions,
+        Dictionary<string, Dictionary<string, int>> transitions,
+        Random random)
+    {
+        if (generated.Count >= 2)
+        {
+            var key = BuildPairKey(generated[^2], generated[^1]);
+            if (pairTransitions.TryGetValue(key, out var pairNexts) && pairNexts.Count > 0)
+            {
+                return SampleNext(pairNexts, random);
+            }
+        }
+
+        if (generated.Count >= 1 &&
+            transitions.TryGetValue(generated[^1], out var nexts) &&
+            nexts.Count > 0)
+        {
+            return SampleNext(nexts, random);
+        }
+
+        return null;
+    }
+
     private sealed class PersistedModel
     {
         public int TotalTokens { get; set; }
         public DateTimeOffset? LastTrainedUtc { get; set; }
         public Dictionary<string, Dictionary<string, int>> Transitions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, Dictionary<string, int>>? PairTransitions { get; set; }
     }
 
-    private enum LanguagePreference
-    {
-        Unknown = 0,
-        CSharp = 1,
-        JavaScript = 2,
-        Both = 3
-    }
 }

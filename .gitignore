@@ -8,3 +8,7 @@ obj/
 *.log
 local-model.json
 DotNetCodingAgent.Api/local-model.json
+ModelStack/.venv/
+ModelStack/artifacts/
+ModelStack/data/corpus.txt
+ModelStack/data/corpus.jsonl

@@ -3,17 +3,23 @@ using DotNetCodingAgent.Contracts;
 
 namespace DotNetCodingAgent.Api.Services;
 
-public sealed class AgentOrchestrator(ILlmClient llmClient, IKnowledgeRepository knowledgeRepository)
+public sealed class AgentOrchestrator(
+    ILlmClient llmClient,
+    IKnowledgeRepository knowledgeRepository,
+    PromptIntelligenceService promptIntelligence)
 {
     public async Task<ChatResponse> ChatAsync(ChatRequest request, CancellationToken cancellationToken)
     {
+        var analysis = promptIntelligence.Analyze(request.Prompt);
         var snippets = await GetSnippetsAsync(request.Prompt, request.UseKnowledge, request.MaxKnowledgeSnippets, cancellationToken);
         var knowledgeBlock = BuildKnowledgeBlock(snippets);
 
-        var systemPrompt = """
+        var systemPrompt = $"""
             You are a senior .NET 10 and C# assistant.
             Use provided documentation snippets when available and cite URLs inline.
             Prefer exact, practical C# and .NET guidance.
+            Intent: {analysis.Intent}
+            Preferred language: {analysis.Language}
             """;
 
         var userPrompt = $"""
@@ -34,6 +40,7 @@ public sealed class AgentOrchestrator(ILlmClient llmClient, IKnowledgeRepository
 
     public async Task<GenerateCodeResponse> GenerateCodeAsync(GenerateCodeRequest request, CancellationToken cancellationToken)
     {
+        var analysis = promptIntelligence.Analyze(request.Task);
         var snippets = await GetSnippetsAsync(request.Task, request.UseKnowledge, request.MaxKnowledgeSnippets, cancellationToken);
         var knowledgeBlock = BuildKnowledgeBlock(snippets);
 
@@ -43,7 +50,11 @@ public sealed class AgentOrchestrator(ILlmClient llmClient, IKnowledgeRepository
             """;
 
         var planningPrompt = $"""
-            Create a step-by-step plan to implement this task in {request.Language}:
+            Create a step-by-step plan to implement this task in {request.Language}.
+            Inferred intent: {analysis.Intent}
+            Preferred language: {analysis.Language}
+
+            Task:
             {request.Task}
 
             Relevant docs:
@@ -53,7 +64,7 @@ public sealed class AgentOrchestrator(ILlmClient llmClient, IKnowledgeRepository
         var plan = await llmClient.GenerateAsync(planningSystemPrompt, planningPrompt, cancellationToken);
 
         var codingSystemPrompt = """
-            You are a principal C# and .NET 10 engineer.
+            You are a principal coding engineer.
             Produce robust, production-ready code and explain key choices.
             """;
 

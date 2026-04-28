@@ -27,6 +27,38 @@
 </div>
 
 <div class="card mb-4">
+    <div class="card-header">Quality Benchmark</div>
+    <div class="card-body">
+        <button class="btn btn-outline-dark" @onclick="RunBenchmarkAsync" disabled="@isBusy">Run Benchmark</button>
+        @if (benchmark is not null)
+        {
+            <p class="mt-3 mb-1"><strong>Average score:</strong> @benchmark.AverageScore</p>
+            <p class="mb-0"><strong>Cases:</strong> @benchmark.CaseCount</p>
+        }
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">Model Stack Backend</div>
+    <div class="card-body">
+        <button class="btn btn-outline-primary me-2" @onclick="CheckBackendAsync" disabled="@isBusy">Check Backend</button>
+        <button class="btn btn-outline-secondary" @onclick="ExportCorpusAsync" disabled="@isBusy">Export Corpus</button>
+        @if (backendStatus is not null)
+        {
+            <p class="mt-3 mb-1"><strong>Provider:</strong> @backendStatus.Provider</p>
+            <p class="mb-1"><strong>Transformer URL:</strong> @backendStatus.TransformerBaseUrl</p>
+            <p class="mb-0"><strong>Transformer healthy:</strong> @backendStatus.TransformerHealthy</p>
+        }
+        @if (exportResult is not null)
+        {
+            <p class="mt-3 mb-1"><strong>Exported chunks:</strong> @exportResult.ChunkCount</p>
+            <p class="mb-1"><strong>JSONL:</strong> @(exportResult.JsonlPath ?? "disabled")</p>
+            <p class="mb-0"><strong>Text:</strong> @(exportResult.TextPath ?? "disabled")</p>
+        }
+    </div>
+</div>
+
+<div class="card mb-4">
     <div class="card-header">Model Status</div>
     <div class="card-body">
         @if (status is null)
@@ -59,6 +91,9 @@
     private string message = string.Empty;
     private string error = string.Empty;
     private ModelStatusResponse? status;
+    private ModelBenchmarkResponse? benchmark;
+    private BackendStatusResponse? backendStatus;
+    private ExportCorpusResponse? exportResult;
 
     protected override async Task OnInitializedAsync()
     {
@@ -147,8 +182,70 @@
         }
     }
 
+    private async Task RunBenchmarkAsync()
+    {
+        isBusy = true;
+        error = string.Empty;
+        message = string.Empty;
+        try
+        {
+            benchmark = await ApiClient.BenchmarkAsync(10);
+            message = benchmark is null
+                ? "No benchmark response."
+                : $"Benchmark completed. Average score: {benchmark.AverageScore}.";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
     private async Task RefreshStatusAsync()
     {
         status = await ApiClient.GetModelStatusAsync();
+    }
+
+    private async Task CheckBackendAsync()
+    {
+        isBusy = true;
+        error = string.Empty;
+        message = string.Empty;
+        try
+        {
+            backendStatus = await ApiClient.GetBackendStatusAsync();
+            message = backendStatus is null ? "No backend status returned." : "Backend status updated.";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task ExportCorpusAsync()
+    {
+        isBusy = true;
+        error = string.Empty;
+        message = string.Empty;
+        try
+        {
+            exportResult = await ApiClient.ExportCorpusAsync(true, true);
+            message = exportResult?.Message ?? "Corpus exported.";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
     }
 }

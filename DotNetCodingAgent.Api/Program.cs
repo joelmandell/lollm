@@ -14,13 +14,24 @@ builder.Services.AddCors(options =>
 
 builder.Services.Configure<KnowledgeOptions>(builder.Configuration.GetSection("Knowledge"));
 builder.Services.Configure<LocalModelOptions>(builder.Configuration.GetSection("LocalModel"));
+builder.Services.Configure<ModelBackendOptions>(builder.Configuration.GetSection("ModelBackend"));
 
-builder.Services.AddSingleton<ITrainableLlmClient, LocalMarkovLlmClient>();
-builder.Services.AddSingleton<ILlmClient>(provider => provider.GetRequiredService<ITrainableLlmClient>());
+builder.Services.AddSingleton<PromptIntelligenceService>();
+builder.Services.AddSingleton<LocalMarkovLlmClient>();
+builder.Services.AddSingleton<ITrainableLlmClient>(provider => provider.GetRequiredService<LocalMarkovLlmClient>());
+builder.Services.AddHttpClient<TransformerServiceLlmClient>((provider, client) =>
+{
+    var options = provider.GetRequiredService<IOptions<ModelBackendOptions>>().Value;
+    client.BaseAddress = new Uri(options.TransformerBaseUrl);
+    client.Timeout = TimeSpan.FromSeconds(Math.Max(10, options.TransformerTimeoutSeconds));
+});
+builder.Services.AddSingleton<ILlmClient, RoutedLlmClient>();
 builder.Services.AddHttpClient<IWebContentFetcher, WebContentFetcher>();
 builder.Services.AddSingleton<IKnowledgeRepository, SqliteKnowledgeRepository>();
 builder.Services.AddSingleton<KnowledgeIngestionService>();
 builder.Services.AddSingleton<ModelTrainingService>();
+builder.Services.AddSingleton<ModelBenchmarkService>();
+builder.Services.AddSingleton<ModelStackService>();
 builder.Services.AddSingleton<TrainingBootstrapService>();
 builder.Services.AddSingleton<AgentOrchestrator>();
 builder.Services.AddHostedService<KnowledgeRefreshWorker>();
@@ -127,6 +138,32 @@ modelGroup.MapPost("/bootstrap", async (
     CancellationToken cancellationToken) =>
 {
     var response = await bootstrapService.BootstrapAsync(request, cancellationToken);
+    return Results.Ok(response);
+});
+
+modelGroup.MapPost("/benchmark", async (
+    ModelBenchmarkRequest request,
+    ModelBenchmarkService benchmarkService,
+    CancellationToken cancellationToken) =>
+{
+    var response = await benchmarkService.RunAsync(request.MaxCases, cancellationToken);
+    return Results.Ok(response);
+});
+
+modelGroup.MapPost("/export-corpus", async (
+    ExportCorpusRequest request,
+    ModelStackService modelStackService,
+    CancellationToken cancellationToken) =>
+{
+    var response = await modelStackService.ExportCorpusAsync(request, cancellationToken);
+    return Results.Ok(response);
+});
+
+modelGroup.MapGet("/backend-status", async (
+    ModelStackService modelStackService,
+    CancellationToken cancellationToken) =>
+{
+    var response = await modelStackService.GetBackendStatusAsync(cancellationToken);
     return Results.Ok(response);
 });
 

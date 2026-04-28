@@ -42,6 +42,15 @@ switch (command)
     case "bootstrap":
         await RunBootstrapAsync(args);
         break;
+    case "benchmark":
+        await RunBenchmarkAsync(args);
+        break;
+    case "backend-status":
+        await RunBackendStatusAsync();
+        break;
+    case "export-corpus":
+        await RunExportCorpusAsync(args);
+        break;
     default:
         Console.WriteLine($"Unknown command: {command}");
         PrintHelp();
@@ -210,6 +219,83 @@ async Task RunBootstrapAsync(string[] arguments)
     Console.WriteLine($"Training tokens: {response.Training.TotalTokens}");
 }
 
+async Task RunBenchmarkAsync(string[] arguments)
+{
+    var maxCases = 10;
+    if (arguments.Length >= 2 && int.TryParse(arguments[1], out var parsedCases))
+    {
+        maxCases = parsedCases;
+    }
+
+    var response = await PostAsync<ModelBenchmarkRequest, ModelBenchmarkResponse>(
+        "/api/model/benchmark",
+        new ModelBenchmarkRequest(maxCases));
+
+    if (response is null)
+    {
+        Console.WriteLine("No response.");
+        return;
+    }
+
+    Console.WriteLine($"Average score: {response.AverageScore}");
+    Console.WriteLine($"Cases: {response.CaseCount}");
+    foreach (var result in response.Results)
+    {
+        Console.WriteLine($"- {result.Prompt}");
+        Console.WriteLine($"  Score: {result.Score}");
+        Console.WriteLine($"  Notes: {result.Notes}");
+    }
+}
+
+async Task RunBackendStatusAsync()
+{
+    var response = await httpClient.GetFromJsonAsync<BackendStatusResponse>("/api/model/backend-status");
+    if (response is null)
+    {
+        Console.WriteLine("No backend status available.");
+        return;
+    }
+
+    Console.WriteLine($"Provider: {response.Provider}");
+    Console.WriteLine($"Transformer URL: {response.TransformerBaseUrl}");
+    Console.WriteLine($"Transformer healthy: {response.TransformerHealthy}");
+}
+
+async Task RunExportCorpusAsync(string[] arguments)
+{
+    var includeJsonl = true;
+    var includeText = true;
+
+    if (arguments.Length >= 2)
+    {
+        includeJsonl = arguments[1].Contains("jsonl", StringComparison.OrdinalIgnoreCase)
+                       || arguments[1].Contains("both", StringComparison.OrdinalIgnoreCase);
+        includeText = arguments[1].Contains("text", StringComparison.OrdinalIgnoreCase)
+                      || arguments[1].Contains("both", StringComparison.OrdinalIgnoreCase);
+    }
+
+    var response = await PostAsync<ExportCorpusRequest, ExportCorpusResponse>(
+        "/api/model/export-corpus",
+        new ExportCorpusRequest(includeJsonl, includeText));
+
+    if (response is null)
+    {
+        Console.WriteLine("No response.");
+        return;
+    }
+
+    Console.WriteLine(response.Message);
+    Console.WriteLine($"Chunks: {response.ChunkCount}");
+    if (!string.IsNullOrWhiteSpace(response.JsonlPath))
+    {
+        Console.WriteLine($"JSONL: {response.JsonlPath}");
+    }
+    if (!string.IsNullOrWhiteSpace(response.TextPath))
+    {
+        Console.WriteLine($"Text: {response.TextPath}");
+    }
+}
+
 async Task<TResponse?> PostAsync<TRequest, TResponse>(string route, TRequest request)
 {
     var response = await httpClient.PostAsJsonAsync(route, request);
@@ -241,4 +327,7 @@ void PrintHelp()
     Console.WriteLine("  model-status");
     Console.WriteLine("  seed-defaults");
     Console.WriteLine("  bootstrap [epochs]");
+    Console.WriteLine("  benchmark [maxCases]");
+    Console.WriteLine("  backend-status");
+    Console.WriteLine("  export-corpus [both|jsonl|text]");
 }

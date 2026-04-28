@@ -68,4 +68,27 @@ public sealed class AgentApiClient(HttpClient httpClient)
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<BootstrapTrainingResponse>(cancellationToken);
     }
+
+    public async Task<ModelBenchmarkResponse?> BenchmarkAsync(int maxCases = 10, CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.PostAsJsonAsync("/api/model/benchmark", new ModelBenchmarkRequest(maxCases), cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ModelBenchmarkResponse>(cancellationToken);
+    }
+
+    public async Task<BackendStatusResponse?> GetBackendStatusAsync(CancellationToken cancellationToken = default)
+    {
+        return await httpClient.GetFromJsonAsync<BackendStatusResponse>("/api/model/backend-status", cancellationToken);
+    }
+
+    public async Task<ExportCorpusResponse?> ExportCorpusAsync(
+        bool includeJsonl = true,
+        bool includeText = true,
+        CancellationToken cancellationToken = default)
+    {
+        var request = new ExportCorpusRequest(includeJsonl, includeText);
+        var response = await httpClient.PostAsJsonAsync("/api/model/export-corpus", request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ExportCorpusResponse>(cancellationToken);
+    }
 }
