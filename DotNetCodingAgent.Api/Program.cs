@@ -12,13 +12,16 @@ builder.Services.AddCors(options =>
         policy.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin());
 });
 
-builder.Services.Configure<LlmOptions>(builder.Configuration.GetSection("Llm"));
 builder.Services.Configure<KnowledgeOptions>(builder.Configuration.GetSection("Knowledge"));
+builder.Services.Configure<LocalModelOptions>(builder.Configuration.GetSection("LocalModel"));
 
-builder.Services.AddHttpClient<ILlmClient, OpenAiLlmClient>();
+builder.Services.AddSingleton<ITrainableLlmClient, LocalMarkovLlmClient>();
+builder.Services.AddSingleton<ILlmClient>(provider => provider.GetRequiredService<ITrainableLlmClient>());
 builder.Services.AddHttpClient<IWebContentFetcher, WebContentFetcher>();
 builder.Services.AddSingleton<IKnowledgeRepository, SqliteKnowledgeRepository>();
 builder.Services.AddSingleton<KnowledgeIngestionService>();
+builder.Services.AddSingleton<ModelTrainingService>();
+builder.Services.AddSingleton<TrainingBootstrapService>();
 builder.Services.AddSingleton<AgentOrchestrator>();
 builder.Services.AddHostedService<KnowledgeRefreshWorker>();
 
@@ -83,6 +86,47 @@ knowledgeGroup.MapPost("/ingest", async (
     CancellationToken cancellationToken) =>
 {
     var response = await ingestionService.IngestAsync(request.Url, request.Force, cancellationToken);
+    return Results.Ok(response);
+});
+
+knowledgeGroup.MapPost("/seed-defaults", async (
+    IKnowledgeRepository repository,
+    IOptions<KnowledgeOptions> options,
+    CancellationToken cancellationToken) =>
+{
+    var added = 0;
+    foreach (var seedUrl in options.Value.SeedUrls)
+    {
+        await repository.AddSourceAsync(seedUrl, null, cancellationToken);
+        added++;
+    }
+
+    return Results.Ok(new OperationResponse(true, $"Seeded {added} default sources."));
+});
+
+var modelGroup = app.MapGroup("/api/model");
+
+modelGroup.MapGet("/status", (ModelTrainingService trainingService) =>
+{
+    var status = trainingService.GetStatus();
+    return Results.Ok(status);
+});
+
+modelGroup.MapPost("/train", async (
+    TrainModelRequest request,
+    ModelTrainingService trainingService,
+    CancellationToken cancellationToken) =>
+{
+    var response = await trainingService.TrainAsync(request.Epochs, cancellationToken);
+    return Results.Ok(response);
+});
+
+modelGroup.MapPost("/bootstrap", async (
+    BootstrapTrainingRequest request,
+    TrainingBootstrapService bootstrapService,
+    CancellationToken cancellationToken) =>
+{
+    var response = await bootstrapService.BootstrapAsync(request, cancellationToken);
     return Results.Ok(response);
 });
 

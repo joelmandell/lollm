@@ -8,7 +8,7 @@ builder.Services.AddRazorComponents()
 builder.Services.AddHttpClient<AgentApiClient>((serviceProvider, httpClient) =>
 {
     var configuration = serviceProvider.GetRequiredService<IConfiguration>();
-    var baseUrl = configuration["AgentApi:BaseUrl"] ?? "http://localhost:5050";
+    var baseUrl = configuration["AgentApi:BaseUrl"] ?? "http://localhost:5101";
     httpClient.BaseAddress = new Uri(baseUrl);
 });
 

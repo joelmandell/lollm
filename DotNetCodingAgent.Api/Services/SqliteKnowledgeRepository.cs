@@ -227,6 +227,30 @@ public sealed class SqliteKnowledgeRepository(IOptions<KnowledgeOptions> options
         return await GetRecentSnippetsAsync(connection, limit, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<string>> GetAllChunkContentsAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        const string sql = """
+            SELECT content
+            FROM knowledge_chunks
+            ORDER BY rowid DESC;
+            """;
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+
+        var chunks = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            chunks.Add(reader.GetString(0));
+        }
+
+        return chunks;
+    }
+
     private static async Task<IReadOnlyList<KnowledgeSnippet>> GetRecentSnippetsAsync(
         SqliteConnection connection,
         int limit,

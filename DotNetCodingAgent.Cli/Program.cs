@@ -1,8 +1,9 @@
 ﻿using System.Net.Http.Json;
 using DotNetCodingAgent.Contracts;
 
-var apiBaseUrl = Environment.GetEnvironmentVariable("DOTNET_AGENT_API_BASE_URL") ?? "http://localhost:5050";
+var apiBaseUrl = Environment.GetEnvironmentVariable("DOTNET_AGENT_API_BASE_URL") ?? "http://localhost:5101";
 using var httpClient = new HttpClient { BaseAddress = new Uri(apiBaseUrl) };
+httpClient.Timeout = TimeSpan.FromMinutes(30);
 
 if (args.Length == 0)
 {
@@ -28,6 +29,18 @@ switch (command)
         break;
     case "ingest":
         await RunIngestAsync(args);
+        break;
+    case "train":
+        await RunTrainAsync(args);
+        break;
+    case "model-status":
+        await RunModelStatusAsync();
+        break;
+    case "seed-defaults":
+        await RunSeedDefaultsAsync();
+        break;
+    case "bootstrap":
+        await RunBootstrapAsync(args);
         break;
     default:
         Console.WriteLine($"Unknown command: {command}");
@@ -118,6 +131,85 @@ async Task RunIngestAsync(string[] arguments)
     Console.WriteLine(response?.Message ?? "No response.");
 }
 
+async Task RunTrainAsync(string[] arguments)
+{
+    var epochs = 1;
+    if (arguments.Length >= 2 && int.TryParse(arguments[1], out var parsedEpochs))
+    {
+        epochs = parsedEpochs;
+    }
+
+    var response = await PostAsync<TrainModelRequest, TrainModelResponse>(
+        "/api/model/train",
+        new TrainModelRequest(epochs));
+
+    if (response is null)
+    {
+        Console.WriteLine("No response.");
+        return;
+    }
+
+    Console.WriteLine(response.Message);
+    Console.WriteLine($"Vocabulary: {response.VocabularySize}");
+    Console.WriteLine($"Total tokens: {response.TotalTokens}");
+}
+
+async Task RunModelStatusAsync()
+{
+    var response = await httpClient.GetFromJsonAsync<ModelStatusResponse>("/api/model/status");
+    if (response is null)
+    {
+        Console.WriteLine("No model status available.");
+        return;
+    }
+
+    Console.WriteLine($"Model path: {response.ModelPath}");
+    Console.WriteLine($"Vocabulary: {response.VocabularySize}");
+    Console.WriteLine($"Total tokens: {response.TotalTokens}");
+    Console.WriteLine($"Last trained: {(response.LastTrainedUtc?.ToString("u") ?? "Never")}");
+}
+
+async Task RunSeedDefaultsAsync()
+{
+    var response = await httpClient.PostAsync("/api/knowledge/seed-defaults", null);
+    var payload = await response.Content.ReadAsStringAsync();
+    if (!response.IsSuccessStatusCode)
+    {
+        Console.WriteLine($"Request failed ({(int)response.StatusCode}): {payload}");
+        return;
+    }
+
+    var data = System.Text.Json.JsonSerializer.Deserialize<OperationResponse>(payload, new System.Text.Json.JsonSerializerOptions
+    {
+        PropertyNameCaseInsensitive = true
+    });
+    Console.WriteLine(data?.Message ?? "Default sources seeded.");
+}
+
+async Task RunBootstrapAsync(string[] arguments)
+{
+    var epochs = 1;
+    if (arguments.Length >= 2 && int.TryParse(arguments[1], out var parsedEpochs))
+    {
+        epochs = parsedEpochs;
+    }
+
+    var response = await PostAsync<BootstrapTrainingRequest, BootstrapTrainingResponse>(
+        "/api/model/bootstrap",
+        new BootstrapTrainingRequest(true, true, epochs));
+
+    if (response is null)
+    {
+        Console.WriteLine("No response.");
+        return;
+    }
+
+    Console.WriteLine(response.Message);
+    Console.WriteLine($"Sources: {response.SourceCount}");
+    Console.WriteLine($"Training vocab: {response.Training.VocabularySize}");
+    Console.WriteLine($"Training tokens: {response.Training.TotalTokens}");
+}
+
 async Task<TResponse?> PostAsync<TRequest, TResponse>(string route, TRequest request)
 {
     var response = await httpClient.PostAsJsonAsync(route, request);
@@ -142,7 +234,11 @@ void PrintHelp()
     Console.WriteLine("Commands:");
     Console.WriteLine("  chat \"question\"");
     Console.WriteLine("  generate \"coding task\"");
-    Console.WriteLine("  add-source \"https://docs-url\"");
+    Console.WriteLine("  add-source \"https://docs-or-github-repo-url\"");
     Console.WriteLine("  list-sources");
     Console.WriteLine("  ingest [optional-url]");
+    Console.WriteLine("  train [epochs]");
+    Console.WriteLine("  model-status");
+    Console.WriteLine("  seed-defaults");
+    Console.WriteLine("  bootstrap [epochs]");
 }

@@ -4,6 +4,7 @@
 <PageTitle>Knowledge Sources</PageTitle>
 
 <h1>Knowledge Sources</h1>
+<p>Add documentation URLs or GitHub repository URLs (for example, <code>https://github.com/dotnet/runtime</code>).</p>
 
 <div class="mb-3">
     <label class="form-label">Add URL</label>
@@ -46,7 +47,7 @@
 
 @code {
     private readonly List<KnowledgeSourceDto> sources = [];
-    private string newUrl = "https://learn.microsoft.com/dotnet/csharp/language-reference/operators/";
+    private string newUrl = "https://github.com/dotnet/runtime";
     private string status = string.Empty;
     private string error = string.Empty;
     private bool isBusy;

@@ -1,0 +1,154 @@
+@page "/training"
+@inject AgentApiClient ApiClient
+
+<PageTitle>Model Training</PageTitle>
+
+<h1>Model Setup and Retraining</h1>
+<p>Bootstrap default sources (.NET 10, EF Core, Aspire, MDN JavaScript, and GitHub repos), ingest content, and retrain the local model.</p>
+
+<div class="card mb-4">
+    <div class="card-header">Quick Start</div>
+    <div class="card-body">
+        <button class="btn btn-primary me-2" @onclick="SeedDefaultsAsync" disabled="@isBusy">Seed Default Sources</button>
+        <button class="btn btn-secondary me-2" @onclick="IngestAllAsync" disabled="@isBusy">Ingest All Sources</button>
+        <button class="btn btn-success" @onclick="BootstrapAsync" disabled="@isBusy">Bootstrap (Seed + Ingest + Train)</button>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">Train Local Model</div>
+    <div class="card-body">
+        <div class="mb-3">
+            <label class="form-label">Epochs</label>
+            <input class="form-control" type="number" min="1" max="20" @bind="epochs" />
+        </div>
+        <button class="btn btn-outline-success" @onclick="TrainAsync" disabled="@isBusy">Retrain Model</button>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">Model Status</div>
+    <div class="card-body">
+        @if (status is null)
+        {
+            <p class="mb-0">No model status available.</p>
+        }
+        else
+        {
+            <p class="mb-1"><strong>Vocabulary:</strong> @status.VocabularySize</p>
+            <p class="mb-1"><strong>Total tokens:</strong> @status.TotalTokens</p>
+            <p class="mb-1"><strong>Model path:</strong> @status.ModelPath</p>
+            <p class="mb-0"><strong>Last trained:</strong> @(status.LastTrainedUtc?.ToString("u") ?? "Never")</p>
+        }
+    </div>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(message))
+{
+    <div class="alert alert-info">@message</div>
+}
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger">@error</div>
+}
+
+@code {
+    private int epochs = 1;
+    private bool isBusy;
+    private string message = string.Empty;
+    private string error = string.Empty;
+    private ModelStatusResponse? status;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshStatusAsync();
+    }
+
+    private async Task SeedDefaultsAsync()
+    {
+        isBusy = true;
+        error = string.Empty;
+        message = string.Empty;
+        try
+        {
+            var response = await ApiClient.SeedDefaultSourcesAsync();
+            message = response?.Message ?? "Default sources seeded.";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task IngestAllAsync()
+    {
+        isBusy = true;
+        error = string.Empty;
+        message = string.Empty;
+        try
+        {
+            var response = await ApiClient.IngestAsync(null, force: true);
+            message = response?.Message ?? "Ingest complete.";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task TrainAsync()
+    {
+        isBusy = true;
+        error = string.Empty;
+        message = string.Empty;
+        try
+        {
+            var response = await ApiClient.TrainModelAsync(epochs);
+            message = response?.Message ?? "Training complete.";
+            await RefreshStatusAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task BootstrapAsync()
+    {
+        isBusy = true;
+        error = string.Empty;
+        message = string.Empty;
+        try
+        {
+            var response = await ApiClient.BootstrapTrainingAsync(new BootstrapTrainingRequest(true, true, epochs));
+            message = response?.Message ?? "Bootstrap complete.";
+            await RefreshStatusAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task RefreshStatusAsync()
+    {
+        status = await ApiClient.GetModelStatusAsync();
+    }
+}

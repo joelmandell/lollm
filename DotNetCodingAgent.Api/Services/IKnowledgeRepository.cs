@@ -7,6 +7,7 @@ public interface IKnowledgeRepository
     Task<IReadOnlyList<KnowledgeSource>> GetActiveSourcesAsync(CancellationToken cancellationToken);
     Task<KnowledgeSource> AddSourceAsync(string url, string? title, CancellationToken cancellationToken);
     Task<IReadOnlyList<KnowledgeSnippet>> SearchAsync(string query, int limit, CancellationToken cancellationToken);
+    Task<IReadOnlyList<string>> GetAllChunkContentsAsync(CancellationToken cancellationToken);
     Task UpdateSourceChunksAsync(
         long sourceId,
         string title,

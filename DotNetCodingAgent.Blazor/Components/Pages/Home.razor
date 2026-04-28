@@ -1,11 +1,31 @@
 ﻿@page "/"
 @inject AgentApiClient ApiClient
+@using Markdig
+@using Microsoft.AspNetCore.Components
+@using System.Net
 
 <PageTitle>Home</PageTitle>
 
 <h1>DotNet Coding Agent</h1>
 
-<p>Chat with the model or run an agentic code generation task grounded in indexed .NET and C# docs.</p>
+<p>Chat with your locally trained model or run agentic code generation grounded in indexed .NET/C# docs and repositories.</p>
+
+<div class="card mb-4">
+    <div class="card-header">Local Model Status</div>
+    <div class="card-body">
+        @if (modelStatus is null)
+        {
+            <p class="mb-2">Status unavailable.</p>
+        }
+        else
+        {
+            <p class="mb-1"><strong>Vocabulary:</strong> @modelStatus.VocabularySize</p>
+            <p class="mb-1"><strong>Total tokens:</strong> @modelStatus.TotalTokens</p>
+            <p class="mb-3"><strong>Last trained:</strong> @(modelStatus.LastTrainedUtc?.ToString("u") ?? "Never")</p>
+        }
+        <button class="btn btn-outline-primary" @onclick="TrainModelAsync" disabled="@isBusy">Train Model</button>
+    </div>
+</div>
 
 <div class="mb-4">
     <h3>Chat</h3>
@@ -21,7 +41,7 @@
     <div class="card mb-4">
         <div class="card-header">Chat Answer</div>
         <div class="card-body">
-            <pre class="mb-0">@chatAnswer</pre>
+            @((MarkupString)RenderResponse(chatAnswer))
         </div>
     </div>
 }
@@ -40,7 +60,7 @@
     <div class="card mb-3">
         <div class="card-header">Plan</div>
         <div class="card-body">
-            <pre class="mb-0">@codePlan</pre>
+            @((MarkupString)RenderResponse(codePlan))
         </div>
     </div>
 }
@@ -50,7 +70,7 @@
     <div class="card">
         <div class="card-header">Generated Code + Notes</div>
         <div class="card-body">
-            <pre class="mb-0">@codeOutput</pre>
+            @((MarkupString)RenderResponse(codeOutput))
         </div>
     </div>
 }
@@ -58,6 +78,11 @@
 @if (!string.IsNullOrWhiteSpace(error))
 {
     <div class="alert alert-danger mt-4">@error</div>
+}
+
+@if (isBusy)
+{
+    <div class="alert alert-secondary mt-4">Working...</div>
 }
 
 @code {
@@ -68,6 +93,12 @@
     private string codeOutput = string.Empty;
     private string error = string.Empty;
     private bool isBusy;
+    private ModelStatusResponse? modelStatus;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshModelStatusAsync();
+    }
 
     private async Task RunChatAsync()
     {
@@ -106,5 +137,60 @@
         {
             isBusy = false;
         }
+    }
+
+    private async Task TrainModelAsync()
+    {
+        isBusy = true;
+        error = string.Empty;
+        try
+        {
+            var response = await ApiClient.TrainModelAsync(epochs: 1);
+            if (response is not null)
+            {
+                chatAnswer = response.Message;
+            }
+
+            await RefreshModelStatusAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task RefreshModelStatusAsync()
+    {
+        modelStatus = await ApiClient.GetModelStatusAsync();
+    }
+
+    private static string RenderResponse(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        if (LooksLikeMarkdown(value))
+        {
+            return Markdown.ToHtml(value);
+        }
+
+        return $"<pre>{WebUtility.HtmlEncode(value)}</pre>";
+    }
+
+    private static bool LooksLikeMarkdown(string value)
+    {
+        return value.Contains("```", StringComparison.Ordinal)
+            || value.Contains("# ", StringComparison.Ordinal)
+            || value.Contains("## ", StringComparison.Ordinal)
+            || value.Contains("- ", StringComparison.Ordinal)
+            || value.Contains("1. ", StringComparison.Ordinal)
+            || value.Contains("**", StringComparison.Ordinal)
+            || value.Contains("`", StringComparison.Ordinal);
     }
 }

@@ -21,7 +21,10 @@ public sealed class KnowledgeRefreshWorker(
             {
                 using var scope = serviceProvider.CreateScope();
                 var ingestion = scope.ServiceProvider.GetRequiredService<KnowledgeIngestionService>();
+                var training = scope.ServiceProvider.GetRequiredService<ModelTrainingService>();
+
                 await ingestion.IngestAsync(null, false, stoppingToken);
+                await training.TrainAsync(1, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

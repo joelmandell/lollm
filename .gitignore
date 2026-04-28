@@ -6,3 +6,5 @@ obj/
 *.suo
 *.db
 *.log
+local-model.json
+DotNetCodingAgent.Api/local-model.json

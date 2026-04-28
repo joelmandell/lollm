@@ -42,3 +42,31 @@ public sealed record IngestKnowledgeRequest(
 public sealed record OperationResponse(
     bool Success,
     string Message);
+
+public sealed record TrainModelRequest(
+    int Epochs = 1);
+
+public sealed record TrainModelResponse(
+    bool Success,
+    string Message,
+    int TotalTokens,
+    int VocabularySize,
+    DateTimeOffset? LastTrainedUtc);
+
+public sealed record ModelStatusResponse(
+    int TotalTokens,
+    int VocabularySize,
+    DateTimeOffset? LastTrainedUtc,
+    string ModelPath);
+
+public sealed record BootstrapTrainingRequest(
+    bool SeedDefaults = true,
+    bool ForceIngest = true,
+    int Epochs = 1);
+
+public sealed record BootstrapTrainingResponse(
+    bool Success,
+    string Message,
+    int SourceCount,
+    OperationResponse Ingestion,
+    TrainModelResponse Training);
