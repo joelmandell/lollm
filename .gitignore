@@ -9,6 +9,8 @@ obj/
 local-model.json
 DotNetCodingAgent.Api/local-model.json
 ModelStack/.venv/
+ModelStack/__pycache__/
+ModelStack/*.pyc
 ModelStack/artifacts/
 ModelStack/data/corpus.txt
 ModelStack/data/corpus.jsonl
