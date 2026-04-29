@@ -8,6 +8,54 @@ from pathlib import Path
 import requests
 
 
+def validate_training_profile(profile: dict) -> list[str]:
+    errors: list[str] = []
+    profile_name = profile.get("profile", "unknown")
+    required_ints = [
+        "vocab_size",
+        "seq_len",
+        "micro_batch_size",
+        "grad_accum_steps",
+        "steps",
+        "d_model",
+        "n_heads",
+        "n_layers",
+        "log_every",
+        "eval_every",
+        "eval_steps",
+        "save_every",
+    ]
+    for key in required_ints:
+        value = profile.get(key)
+        if not isinstance(value, int) or value <= 0:
+            errors.append(f"[{profile_name}] '{key}' must be a positive integer.")
+
+    d_model = profile.get("d_model")
+    n_heads = profile.get("n_heads")
+    if isinstance(d_model, int) and isinstance(n_heads, int) and d_model > 0 and n_heads > 0:
+        if d_model % n_heads != 0:
+            errors.append(
+                f"[{profile_name}] d_model ({d_model}) must be divisible by n_heads ({n_heads}).")
+
+    dropout = profile.get("dropout")
+    if not isinstance(dropout, (int, float)) or float(dropout) < 0 or float(dropout) >= 1:
+        errors.append(f"[{profile_name}] 'dropout' must be in range [0, 1).")
+
+    lr = profile.get("lr")
+    if not isinstance(lr, (int, float)) or float(lr) <= 0:
+        errors.append(f"[{profile_name}] 'lr' must be a positive number.")
+
+    ratio = profile.get("priority_token_ratio")
+    if ratio is not None and (not isinstance(ratio, (int, float)) or float(ratio) < 0 or float(ratio) > 1):
+        errors.append(f"[{profile_name}] 'priority_token_ratio' must be in range [0, 1].")
+
+    tokenizer = profile.get("tokenizer")
+    if not isinstance(tokenizer, str) or not tokenizer.strip():
+        errors.append(f"[{profile_name}] 'tokenizer' must be a non-empty string.")
+
+    return errors
+
+
 def run_command(command: list[str], cwd: Path):
     print(f"Running: {' '.join(command)}")
     subprocess.run(command, cwd=str(cwd), check=True)
@@ -157,7 +205,16 @@ def main():
             profiles_to_try.append(candidate)
 
     completed = False
+    skipped_profiles: list[str] = []
     for index, active_profile in enumerate(profiles_to_try):
+        validation_errors = validate_training_profile(active_profile)
+        if validation_errors:
+            profile_name = active_profile.get("profile", f"profile-{index}")
+            skipped_profiles.append(profile_name)
+            for message in validation_errors:
+                print(f"Skipping invalid profile: {message}")
+            continue
+
         train_args = build_train_args(active_profile, weighted_spec)
         if args.torchrun and index == 0:
             cmd = ["torchrun", "--nproc_per_node", str(args.nproc_per_node)] + train_args
@@ -176,6 +233,10 @@ def main():
                 f"(likely OOM). Retrying with '{next_profile}'.")
 
     if not completed:
+        if len(skipped_profiles) == len(profiles_to_try):
+            raise RuntimeError(
+                "No valid training profile available after validation. "
+                f"Skipped profiles: {', '.join(skipped_profiles)}.")
         raise RuntimeError("Training did not complete with any configured profile.")
 
     if not args.skip_eval:

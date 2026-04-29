@@ -18,3 +18,7 @@ ModelStack/data/github_csharp_quality_corpus.txt
 ModelStack/data/github_csharp_quality_manifest.json
 ModelStack/evals/coding_quality_cases_1000.jsonl
 ModelStack/evals/coding_quality_cases_10000000.jsonl
+ModelStack/data/feedback_corpus.jsonl
+ModelStack/data/feedback_corpus.txt
+ModelStack/data/generation_feedback.jsonl
+ModelStack/ModelStack/
