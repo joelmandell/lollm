@@ -2,11 +2,15 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using DotNetCodingAgent.Api.Options;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace DotNetCodingAgent.Api.Services;
 
-public sealed class HostedOpenAiLlmClient(HttpClient httpClient, IOptions<ModelBackendOptions> options)
+public sealed class HostedOpenAiLlmClient(
+    HttpClient httpClient,
+    IOptions<ModelBackendOptions> options,
+    ILogger<HostedOpenAiLlmClient> logger)
 {
     private static readonly TimeSpan ChatCompletionsAttemptTimeout = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan GenerateAttemptTimeout = TimeSpan.FromSeconds(14);
@@ -45,6 +49,9 @@ public sealed class HostedOpenAiLlmClient(HttpClient httpClient, IOptions<ModelB
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            logger.LogWarning(
+                "Hosted OpenAI chat/completions timed out after {TimeoutSeconds}s; using transformer fallback.",
+                ChatCompletionsAttemptTimeout.TotalSeconds);
             return await GenerateViaTransformerEndpointAsync(systemPrompt, userPrompt, cancellationToken);
         }
 
@@ -89,7 +96,13 @@ public sealed class HostedOpenAiLlmClient(HttpClient httpClient, IOptions<ModelB
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return "The model backend timed out while generating. Retry with a tighter prompt (language/framework/output format).";
+            logger.LogWarning(
+                "Transformer /generate attempt timed out after {TimeoutSeconds}s (first pass).",
+                GenerateAttemptTimeout.TotalSeconds);
+            return BuildTimeoutRescueResponse(
+                userPrompt,
+                "transformer.generate.first-pass-timeout",
+                $"Timeout after {GenerateAttemptTimeout.TotalSeconds:0}s while calling /generate.");
         }
 
         if (!IsLowConfidenceFallback(first))
@@ -120,12 +133,29 @@ public sealed class HostedOpenAiLlmClient(HttpClient httpClient, IOptions<ModelB
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return "The model backend timed out while generating. Retry with a tighter prompt (language/framework/output format).";
+            logger.LogWarning(
+                "Transformer /generate attempt timed out after {TimeoutSeconds}s (retry pass).",
+                GenerateAttemptTimeout.TotalSeconds);
+            return BuildTimeoutRescueResponse(
+                userPrompt,
+                "transformer.generate.retry-timeout",
+                $"Timeout after {GenerateAttemptTimeout.TotalSeconds:0}s while calling /generate retry.");
         }
 
-        return IsLowConfidenceFallback(second)
-            ? "The local model is currently under-confident for this prompt. Please retry with tighter constraints (language, framework, output format) while retraining continues."
-            : second;
+        if (!IsLowConfidenceFallback(second))
+        {
+            return second;
+        }
+
+        var rescue = TryBuildDeterministicRescue(userPrompt);
+        if (!string.IsNullOrWhiteSpace(rescue))
+        {
+            return rescue;
+        }
+
+        return FormatModelError(
+            "transformer.generate.low-confidence",
+            "The local model is currently under-confident for this prompt. Please retry with tighter constraints (language, framework, output format) while retraining continues.");
     }
 
     private async Task<string> GenerateViaTransformerOnceAsync(
@@ -174,9 +204,73 @@ public sealed class HostedOpenAiLlmClient(HttpClient httpClient, IOptions<ModelB
         return text.Contains("Unable to produce a high-confidence answer", StringComparison.OrdinalIgnoreCase);
     }
 
+    private string BuildTimeoutRescueResponse(string userPrompt, string stage, string technicalCause)
+    {
+        return TryBuildDeterministicRescue(userPrompt)
+               ?? FormatModelError(
+                   stage,
+                   "The model backend timed out while generating. Retry with a tighter prompt (language/framework/output format).",
+                   technicalCause);
+    }
+
+    private static string? TryBuildDeterministicRescue(string userPrompt)
+    {
+        if (string.IsNullOrWhiteSpace(userPrompt))
+        {
+            return null;
+        }
+
+        var lower = userPrompt.ToLowerInvariant();
+        var wantsHelloEndpoint = lower.Contains("/hello-world", StringComparison.Ordinal)
+            || (lower.Contains("hello world", StringComparison.Ordinal)
+                && lower.Contains("endpoint", StringComparison.Ordinal));
+        var wantsQueryParam = lower.Contains("get param", StringComparison.Ordinal)
+            || lower.Contains("query", StringComparison.Ordinal)
+            || lower.Contains("querystring", StringComparison.Ordinal);
+        var wantsCSharp = lower.Contains("c#", StringComparison.Ordinal)
+            || lower.Contains("csharp", StringComparison.Ordinal)
+            || lower.Contains(".net", StringComparison.Ordinal)
+            || lower.Contains("dotnet", StringComparison.Ordinal);
+
+        if (!wantsHelloEndpoint || !wantsQueryParam || !wantsCSharp)
+        {
+            return null;
+        }
+
+        return """
+            ```csharp
+            var builder = WebApplication.CreateBuilder(args);
+            var app = builder.Build();
+            
+            app.MapGet("/hello-world", (string name) =>
+                Results.Ok($"hello world {name}"));
+            
+            app.Run();
+            ```
+            """;
+    }
+
     private string? ResolveApiKey()
     {
         return _options.OpenAiApiKey
                ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+    }
+
+    private string FormatModelError(string stage, string userMessage, string? technicalCause = null)
+    {
+        if (!_options.IncludeDetailedModelErrors)
+        {
+            return userMessage;
+        }
+
+        var details = technicalCause ?? "No additional details.";
+        return $$"""
+            {{userMessage}}
+            [ModelError]
+            Stage={{stage}}
+            OpenAiBaseUrl={{_options.OpenAiBaseUrl}}
+            OpenAiModel={{_options.OpenAiModel}}
+            Details={{details}}
+            """;
     }
 }

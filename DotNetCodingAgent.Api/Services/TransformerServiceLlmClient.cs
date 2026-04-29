@@ -12,11 +12,32 @@ public sealed class TransformerServiceLlmClient(HttpClient httpClient, IOptions<
     public async Task<string> GenerateAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken)
     {
         var request = new TransformerGenerateRequest(systemPrompt, userPrompt, 600, 0.2);
-        var response = await httpClient.PostAsJsonAsync("/generate", request, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        HttpResponseMessage response;
+        string body;
+        try
+        {
+            response = await httpClient.PostAsJsonAsync("/generate", request, cancellationToken);
+            body = await response.Content.ReadAsStringAsync(cancellationToken);
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Transformer backend request timed out after {_options.TransformerTimeoutSeconds}s " +
+                $"(baseUrl={_options.TransformerBaseUrl}, endpoint=/generate).",
+                ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new InvalidOperationException(
+                $"Transformer backend request failed (baseUrl={_options.TransformerBaseUrl}, endpoint=/generate): {ex.Message}",
+                ex);
+        }
+
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException($"Transformer backend failed ({response.StatusCode}): {body}");
+            throw new InvalidOperationException(
+                $"Transformer backend failed ({response.StatusCode}) " +
+                $"[baseUrl={_options.TransformerBaseUrl}, endpoint=/generate]: {body}");
         }
 
         var payload = System.Text.Json.JsonSerializer.Deserialize<TransformerGenerateResponse>(

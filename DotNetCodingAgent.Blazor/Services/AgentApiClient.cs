@@ -403,7 +403,7 @@ public sealed class AgentApiClient(HttpClient httpClient)
         CancellationToken cancellationToken)
     {
         var legacyResponse = await httpClient.PostAsJsonAsync("/api/chat", request, cancellationToken);
-        legacyResponse.EnsureSuccessStatusCode();
+        await EnsureSuccessWithDetailsAsync(legacyResponse, "/api/chat", cancellationToken);
         return await legacyResponse.Content.ReadFromJsonAsync<ChatResponse>(cancellationToken);
     }
 
@@ -412,7 +412,23 @@ public sealed class AgentApiClient(HttpClient httpClient)
         CancellationToken cancellationToken)
     {
         var legacyResponse = await httpClient.PostAsJsonAsync("/api/agent/generate-code", request, cancellationToken);
-        legacyResponse.EnsureSuccessStatusCode();
+        await EnsureSuccessWithDetailsAsync(legacyResponse, "/api/agent/generate-code", cancellationToken);
         return await legacyResponse.Content.ReadFromJsonAsync<GenerateCodeResponse>(cancellationToken);
+    }
+
+    private static async Task EnsureSuccessWithDetailsAsync(
+        HttpResponseMessage response,
+        string endpoint,
+        CancellationToken cancellationToken)
+    {
+        if (response.IsSuccessStatusCode)
+        {
+            return;
+        }
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        throw new InvalidOperationException(
+            $"Backend call failed for {endpoint} with status {(int)response.StatusCode} ({response.StatusCode}). " +
+            $"Response: {body}");
     }
 }
