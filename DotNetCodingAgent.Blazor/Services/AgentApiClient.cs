@@ -92,6 +92,11 @@ public sealed class AgentApiClient(HttpClient httpClient)
         return await httpClient.GetFromJsonAsync<BackendStatusResponse>("/api/model/backend-status", cancellationToken);
     }
 
+    public async Task<FeedbackStatusResponse?> GetFeedbackStatusAsync(CancellationToken cancellationToken = default)
+    {
+        return await httpClient.GetFromJsonAsync<FeedbackStatusResponse>("/api/model/feedback-status", cancellationToken);
+    }
+
     public async Task<ExportCorpusResponse?> ExportCorpusAsync(
         bool includeJsonl = true,
         bool includeText = true,

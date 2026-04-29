@@ -113,6 +113,14 @@ public sealed record CodingEvalResponse(
     int CaseCount,
     IReadOnlyList<CodingEvalCaseResult> Results);
 
+public sealed record FeedbackStatusResponse(
+    string FeedbackDirectory,
+    string GenerationFeedbackPath,
+    string EvalRunsPath,
+    int GenerationFeedbackEntries,
+    int EvalRunEntries,
+    DateTimeOffset? LastUpdatedUtc);
+
 public sealed record ExportCorpusRequest(
     bool IncludeJsonl = true,
     bool IncludeText = true);

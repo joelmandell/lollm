@@ -7,7 +7,8 @@ public sealed class AgentOrchestrator(
     ILlmClient llmClient,
     IKnowledgeRepository knowledgeRepository,
     PromptIntelligenceService promptIntelligence,
-    CSharpCodeVerifier codeVerifier)
+    CSharpCodeVerifier codeVerifier,
+    EvalFeedbackService evalFeedbackService)
 {
     public async Task<ChatResponse> ChatAsync(ChatRequest request, CancellationToken cancellationToken)
     {
@@ -131,6 +132,11 @@ public sealed class AgentOrchestrator(
             codingPrompt,
             request,
             plan,
+            cancellationToken);
+        await evalFeedbackService.RecordGenerationAsync(
+            request,
+            refined.Metrics,
+            refined.Output,
             cancellationToken);
         return new GenerateCodeResponse(
             plan,

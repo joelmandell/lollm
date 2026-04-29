@@ -4,7 +4,8 @@ namespace DotNetCodingAgent.Api.Services;
 
 public sealed class CodingEvalService(
     AgentOrchestrator orchestrator,
-    CSharpCodeVerifier codeVerifier)
+    CSharpCodeVerifier codeVerifier,
+    EvalFeedbackService evalFeedbackService)
 {
     private static readonly string[] DefaultPrompts =
     [
@@ -22,7 +23,7 @@ public sealed class CodingEvalService(
         var results = new List<CodingEvalCaseResult>(prompts.Count);
         foreach (var prompt in prompts)
         {
-            var response = await orchestrator.GenerateCodeAsync(
+            var codeResponse = await orchestrator.GenerateCodeAsync(
                 new GenerateCodeRequest(
                     Task: prompt,
                     Language: "csharp",
@@ -30,9 +31,9 @@ public sealed class CodingEvalService(
                     MaxKnowledgeSnippets: request.MaxKnowledgeSnippets),
                 cancellationToken);
 
-            var metrics = response.Metrics ?? new CodeGenerationMetrics(0, 0, false, []);
-            var verification = codeVerifier.Verify(prompt, response.Code);
-            var score = ScoreEval(prompt, response.Code, verification, metrics);
+            var metrics = codeResponse.Metrics ?? new CodeGenerationMetrics(0, 0, false, []);
+            var verification = codeVerifier.Verify(prompt, codeResponse.Code);
+            var score = ScoreEval(prompt, codeResponse.Code, verification, metrics);
             var notes = metrics.VerificationPassed
                 ? "Verifier loop passed."
                 : $"Verifier failed: {string.Join("; ", metrics.LastVerificationErrors.Take(2))}";
@@ -47,7 +48,9 @@ public sealed class CodingEvalService(
         }
 
         var average = results.Count == 0 ? 0 : (int)Math.Round(results.Average(r => r.Score));
-        return new CodingEvalResponse(average, results.Count, results);
+        var response = new CodingEvalResponse(average, results.Count, results);
+        await evalFeedbackService.RecordEvalRunAsync(request, response, cancellationToken);
+        return response;
     }
 
     private static int ScoreEval(

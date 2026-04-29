@@ -18,6 +18,7 @@ builder.Services.Configure<ModelBackendOptions>(builder.Configuration.GetSection
 
 builder.Services.AddSingleton<PromptIntelligenceService>();
 builder.Services.AddSingleton<CSharpCodeVerifier>();
+builder.Services.AddSingleton<EvalFeedbackService>();
 builder.Services.AddSingleton<LocalMarkovLlmClient>();
 builder.Services.AddSingleton<ITrainableLlmClient>(provider => provider.GetRequiredService<LocalMarkovLlmClient>());
 builder.Services.AddHttpClient<TransformerServiceLlmClient>((provider, client) =>
@@ -193,6 +194,14 @@ modelGroup.MapGet("/backend-status", async (
     CancellationToken cancellationToken) =>
 {
     var response = await modelStackService.GetBackendStatusAsync(cancellationToken);
+    return Results.Ok(response);
+});
+
+modelGroup.MapGet("/feedback-status", async (
+    EvalFeedbackService evalFeedbackService,
+    CancellationToken cancellationToken) =>
+{
+    var response = await evalFeedbackService.GetStatusAsync(cancellationToken);
     return Results.Ok(response);
 });
 

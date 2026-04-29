@@ -52,6 +52,9 @@ switch (command)
     case "evaluate-coding":
         await RunEvaluateCodingAsync(args);
         break;
+    case "feedback-status":
+        await RunFeedbackStatusAsync();
+        break;
     case "export-corpus":
         await RunExportCorpusAsync(args);
         break;
@@ -314,6 +317,23 @@ async Task RunEvaluateCodingAsync(string[] arguments)
     }
 }
 
+async Task RunFeedbackStatusAsync()
+{
+    var response = await httpClient.GetFromJsonAsync<FeedbackStatusResponse>("/api/model/feedback-status");
+    if (response is null)
+    {
+        Console.WriteLine("No feedback status available.");
+        return;
+    }
+
+    Console.WriteLine($"Feedback directory: {response.FeedbackDirectory}");
+    Console.WriteLine($"Generation feedback file: {response.GenerationFeedbackPath}");
+    Console.WriteLine($"Eval runs file: {response.EvalRunsPath}");
+    Console.WriteLine($"Generation entries: {response.GenerationFeedbackEntries}");
+    Console.WriteLine($"Eval run entries: {response.EvalRunEntries}");
+    Console.WriteLine($"Last updated: {(response.LastUpdatedUtc?.ToString("u") ?? "Never")}");
+}
+
 async Task RunExportCorpusAsync(string[] arguments)
 {
     var includeJsonl = true;
@@ -444,6 +464,7 @@ void PrintHelp()
     Console.WriteLine("  benchmark [maxCases]");
     Console.WriteLine("  backend-status");
     Console.WriteLine("  evaluate-coding");
+    Console.WriteLine("  feedback-status");
     Console.WriteLine("  export-corpus [both|jsonl|text]");
     Console.WriteLine("  train-project <projectTag> <zipPath> [epochs]");
 }
