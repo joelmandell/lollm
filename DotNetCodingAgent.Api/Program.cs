@@ -251,6 +251,14 @@ modelGroup.MapGet("/improvement-training-log", async (
     return Results.Ok(response);
 });
 
+modelGroup.MapPost("/stop-improvement-training", async (
+    ImprovementTrainingService improvementTrainingService,
+    CancellationToken cancellationToken) =>
+{
+    var response = await improvementTrainingService.StopAsync(cancellationToken);
+    return Results.Ok(response);
+});
+
 modelGroup.MapPost("/train-project-zip", async (
     HttpRequest httpRequest,
     ProjectZipTrainingService projectZipTrainingService,

@@ -186,6 +186,12 @@ public sealed record ImprovementTrainingLogResponse(
     IReadOnlyList<string> Lines,
     string Message);
 
+public sealed record ImprovementTrainingStopResponse(
+    bool Success,
+    bool WasRunning,
+    int? ProcessId,
+    string Message);
+
 public sealed record ExportCorpusRequest(
     bool IncludeJsonl = true,
     bool IncludeText = true);

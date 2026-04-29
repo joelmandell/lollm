@@ -10,7 +10,7 @@ public sealed class ImprovementTrainingService(
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
-    private TrainingRunState _state = new(false, null, null, null, null, null, "No training run started.");
+    private TrainingRunState _state = new(false, null, null, null, null, null, false, "No training run started.");
 
     public async Task<RunImprovementTrainingResponse> RunAsync(
         RunImprovementTrainingRequest request,
@@ -66,6 +66,7 @@ public sealed class ImprovementTrainingService(
                 StartedUtc: DateTimeOffset.UtcNow,
                 CompletedUtc: null,
                 ExitCode: null,
+                StopRequested: false,
                 Message: "Improvement training started.");
 
             _ = Task.Run(() => PumpProcessLogsAsync(process, logPath));
@@ -94,6 +95,53 @@ public sealed class ImprovementTrainingService(
             CompletedUtc: _state.CompletedUtc,
             ExitCode: _state.ExitCode,
             Message: _state.Message);
+    }
+
+    public async Task<ImprovementTrainingStopResponse> StopAsync(CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_process is null || _process.HasExited)
+            {
+                return new ImprovementTrainingStopResponse(
+                    Success: true,
+                    WasRunning: false,
+                    ProcessId: _state.ProcessId,
+                    Message: "No active improvement training process was running.");
+            }
+
+            var pid = _process.Id;
+            _state = _state with { StopRequested = true };
+
+            try
+            {
+                _process.Kill(entireProcessTree: true);
+                await _process.WaitForExitAsync(cancellationToken);
+            }
+            catch (InvalidOperationException)
+            {
+                // Process already exited between check and kill.
+            }
+
+            _state = _state with
+            {
+                IsRunning = false,
+                CompletedUtc = DateTimeOffset.UtcNow,
+                ExitCode = _process.HasExited ? _process.ExitCode : null,
+                Message = "Improvement training stopped by request."
+            };
+
+            return new ImprovementTrainingStopResponse(
+                Success: true,
+                WasRunning: true,
+                ProcessId: pid,
+                Message: "Improvement training stop signal sent.");
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task<ImprovementTrainingLogResponse> GetLogTailAsync(int tailLines, CancellationToken cancellationToken)
@@ -171,7 +219,9 @@ public sealed class ImprovementTrainingService(
                 IsRunning = false,
                 CompletedUtc = DateTimeOffset.UtcNow,
                 ExitCode = process.ExitCode,
-                Message = process.ExitCode == 0 ? "Improvement training completed." : "Improvement training failed."
+                Message = _state.StopRequested
+                    ? "Improvement training stopped by request."
+                    : process.ExitCode == 0 ? "Improvement training completed." : "Improvement training failed."
             };
         }
         finally
@@ -246,5 +296,6 @@ public sealed class ImprovementTrainingService(
         DateTimeOffset? StartedUtc,
         DateTimeOffset? CompletedUtc,
         int? ExitCode,
+        bool StopRequested,
         string Message);
 }

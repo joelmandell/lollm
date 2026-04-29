@@ -70,6 +70,9 @@ switch (command)
     case "improvement-training-log":
         await RunImprovementTrainingLogAsync(args);
         break;
+    case "stop-improvement-training":
+        await RunStopImprovementTrainingAsync();
+        break;
     case "export-corpus":
         await RunExportCorpusAsync(args);
         break;
@@ -513,6 +516,23 @@ async Task RunImprovementTrainingLogAsync(string[] arguments)
     }
 }
 
+async Task RunStopImprovementTrainingAsync()
+{
+    var response = await PostAsync<object, ImprovementTrainingStopResponse>(
+        "/api/model/stop-improvement-training",
+        new { });
+    if (response is null)
+    {
+        Console.WriteLine("No stop response.");
+        return;
+    }
+
+    Console.WriteLine(response.Message);
+    Console.WriteLine($"Success: {response.Success}");
+    Console.WriteLine($"Was running: {response.WasRunning}");
+    Console.WriteLine($"ProcessId: {(response.ProcessId?.ToString() ?? "n/a")}");
+}
+
 async Task RunExportCorpusAsync(string[] arguments)
 {
     var includeJsonl = true;
@@ -649,6 +669,7 @@ void PrintHelp()
     Console.WriteLine("  run-improvement-training [maxItems] [lowScoreThreshold]");
     Console.WriteLine("  improvement-training-status");
     Console.WriteLine("  improvement-training-log [tailLines]");
+    Console.WriteLine("  stop-improvement-training");
     Console.WriteLine("  export-corpus [both|jsonl|text]");
     Console.WriteLine("  train-project <projectTag> <zipPath> [epochs]");
 }
