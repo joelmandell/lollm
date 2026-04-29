@@ -179,6 +179,13 @@ public sealed record ImprovementTrainingStatusResponse(
     int? ExitCode,
     string Message);
 
+public sealed record ImprovementTrainingLogResponse(
+    string? LogPath,
+    int TailLines,
+    bool Exists,
+    IReadOnlyList<string> Lines,
+    string Message);
+
 public sealed record ExportCorpusRequest(
     bool IncludeJsonl = true,
     bool IncludeText = true);

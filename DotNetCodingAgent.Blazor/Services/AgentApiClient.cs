@@ -133,6 +133,13 @@ public sealed class AgentApiClient(HttpClient httpClient)
         return await httpClient.GetFromJsonAsync<ImprovementTrainingStatusResponse>("/api/model/improvement-training-status", cancellationToken);
     }
 
+    public async Task<ImprovementTrainingLogResponse?> GetImprovementTrainingLogAsync(
+        int tailLines = 200,
+        CancellationToken cancellationToken = default)
+    {
+        return await httpClient.GetFromJsonAsync<ImprovementTrainingLogResponse>($"/api/model/improvement-training-log?tailLines={Math.Clamp(tailLines, 1, 2000)}", cancellationToken);
+    }
+
     public async Task<ExportCorpusResponse?> ExportCorpusAsync(
         bool includeJsonl = true,
         bool includeText = true,

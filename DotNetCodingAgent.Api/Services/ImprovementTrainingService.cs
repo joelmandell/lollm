@@ -96,6 +96,47 @@ public sealed class ImprovementTrainingService(
             Message: _state.Message);
     }
 
+    public async Task<ImprovementTrainingLogResponse> GetLogTailAsync(int tailLines, CancellationToken cancellationToken)
+    {
+        var boundedTail = Math.Clamp(tailLines, 1, 2000);
+        var logPath = _state.LogPath;
+        if (string.IsNullOrWhiteSpace(logPath))
+        {
+            return new ImprovementTrainingLogResponse(
+                LogPath: null,
+                TailLines: boundedTail,
+                Exists: false,
+                Lines: [],
+                Message: "No training log is available yet.");
+        }
+
+        if (!File.Exists(logPath))
+        {
+            return new ImprovementTrainingLogResponse(
+                LogPath: logPath,
+                TailLines: boundedTail,
+                Exists: false,
+                Lines: [],
+                Message: "Training log file does not exist.");
+        }
+
+        var lines = new List<string>();
+        await using var stream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        while (await reader.ReadLineAsync(cancellationToken) is { } line)
+        {
+            lines.Add(line);
+        }
+
+        var tail = lines.Count > boundedTail ? lines[^boundedTail..] : lines;
+        return new ImprovementTrainingLogResponse(
+            LogPath: logPath,
+            TailLines: boundedTail,
+            Exists: true,
+            Lines: tail,
+            Message: _state.IsRunning ? "Training is running." : "Training is not running.");
+    }
+
     private async Task PumpProcessLogsAsync(Process process, string logPath)
     {
         await using var stream = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.Read);

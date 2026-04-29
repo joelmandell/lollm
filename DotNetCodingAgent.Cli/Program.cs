@@ -67,6 +67,9 @@ switch (command)
     case "improvement-training-status":
         await RunImprovementTrainingStatusAsync();
         break;
+    case "improvement-training-log":
+        await RunImprovementTrainingLogAsync(args);
+        break;
     case "export-corpus":
         await RunExportCorpusAsync(args);
         break;
@@ -485,6 +488,31 @@ async Task RunImprovementTrainingStatusAsync()
     Console.WriteLine($"Message: {response.Message}");
 }
 
+async Task RunImprovementTrainingLogAsync(string[] arguments)
+{
+    var tailLines = 200;
+    if (arguments.Length >= 2 && int.TryParse(arguments[1], out var parsedLines))
+    {
+        tailLines = Math.Clamp(parsedLines, 1, 2000);
+    }
+
+    var response = await httpClient.GetFromJsonAsync<ImprovementTrainingLogResponse>($"/api/model/improvement-training-log?tailLines={tailLines}");
+    if (response is null)
+    {
+        Console.WriteLine("No improvement training log available.");
+        return;
+    }
+
+    Console.WriteLine(response.Message);
+    Console.WriteLine($"Log: {response.LogPath ?? "n/a"}");
+    Console.WriteLine($"Exists: {response.Exists}");
+    Console.WriteLine($"Tail lines requested: {response.TailLines}");
+    foreach (var line in response.Lines)
+    {
+        Console.WriteLine(line);
+    }
+}
+
 async Task RunExportCorpusAsync(string[] arguments)
 {
     var includeJsonl = true;
@@ -620,6 +648,7 @@ void PrintHelp()
     Console.WriteLine("  run-improvement-cycle [maxItems] [lowScoreThreshold]");
     Console.WriteLine("  run-improvement-training [maxItems] [lowScoreThreshold]");
     Console.WriteLine("  improvement-training-status");
+    Console.WriteLine("  improvement-training-log [tailLines]");
     Console.WriteLine("  export-corpus [both|jsonl|text]");
     Console.WriteLine("  train-project <projectTag> <zipPath> [epochs]");
 }
