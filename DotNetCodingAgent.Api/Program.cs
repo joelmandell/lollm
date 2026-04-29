@@ -49,6 +49,7 @@ builder.Services.AddSingleton<IKnowledgeRepository, SqliteKnowledgeRepository>()
 builder.Services.AddSingleton<KnowledgeIngestionService>();
 builder.Services.AddSingleton<ModelTrainingService>();
 builder.Services.AddSingleton<ModelBenchmarkService>();
+builder.Services.AddSingleton<CodingEvalService>();
 builder.Services.AddSingleton<ModelStackService>();
 builder.Services.AddSingleton<ProjectZipTrainingService>();
 builder.Services.AddSingleton<TrainingBootstrapService>();
@@ -166,6 +167,15 @@ modelGroup.MapPost("/benchmark", async (
     CancellationToken cancellationToken) =>
 {
     var response = await benchmarkService.RunAsync(request.MaxCases, cancellationToken);
+    return Results.Ok(response);
+});
+
+modelGroup.MapPost("/evaluate-coding", async (
+    CodingEvalRequest request,
+    CodingEvalService codingEvalService,
+    CancellationToken cancellationToken) =>
+{
+    var response = await codingEvalService.RunAsync(request, cancellationToken);
     return Results.Ok(response);
 });
 

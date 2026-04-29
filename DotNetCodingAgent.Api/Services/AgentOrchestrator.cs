@@ -126,7 +126,7 @@ public sealed class AgentOrchestrator(
             2) After the code block, add a short explanation.
             """;
 
-        var codeAndExplanation = await GenerateRefinedCodeAsync(
+        var refined = await GenerateRefinedCodeAsync(
             codingSystemPrompt,
             codingPrompt,
             request,
@@ -134,9 +134,10 @@ public sealed class AgentOrchestrator(
             cancellationToken);
         return new GenerateCodeResponse(
             plan,
-            codeAndExplanation,
+            refined.Output,
             "Generated from planner + coder + self-critique refinement stages.",
-            snippets.Select(s => s.SourceUrl).Distinct().ToList());
+            snippets.Select(s => s.SourceUrl).Distinct().ToList(),
+            refined.Metrics);
     }
 
     private async Task<IReadOnlyList<KnowledgeSnippet>> GetSnippetsAsync(
@@ -447,7 +448,7 @@ public sealed class AgentOrchestrator(
         return ScoreCodeCandidate(userPrompt, rescued) > refinedScore ? rescued : refined;
     }
 
-    private async Task<string> GenerateRefinedCodeAsync(
+    private async Task<RefinedCodeResult> GenerateRefinedCodeAsync(
         string codingSystemPrompt,
         string codingPrompt,
         GenerateCodeRequest request,
@@ -551,7 +552,11 @@ public sealed class AgentOrchestrator(
         var bestScore = Math.Max(rescuedScore, refinedScore);
         if (bestScore >= 65)
         {
-            return NormalizeGeneratedCodeOutput(best);
+            return await VerifyAndRepairCodeCandidateAsync(
+                request,
+                plan,
+                best,
+                cancellationToken);
         }
 
         var finalRescueSystemPrompt = """
@@ -586,7 +591,7 @@ public sealed class AgentOrchestrator(
             cancellationToken);
     }
 
-    private async Task<string> VerifyAndRepairCodeCandidateAsync(
+    private async Task<RefinedCodeResult> VerifyAndRepairCodeCandidateAsync(
         GenerateCodeRequest request,
         string plan,
         string initialCandidate,
@@ -594,19 +599,33 @@ public sealed class AgentOrchestrator(
     {
         const int maxRepairIterations = 2;
         var candidate = initialCandidate;
+        CodeVerificationResult? lastVerification = null;
 
         for (var i = 0; i <= maxRepairIterations; i++)
         {
             var verification = codeVerifier.Verify(request.Task, candidate);
+            lastVerification = verification;
             var score = ScoreCodeCandidate(request.Task, candidate);
             if (verification.IsValid && score >= 65)
             {
-                return NormalizeGeneratedCodeOutput(candidate);
+                return new RefinedCodeResult(
+                    NormalizeGeneratedCodeOutput(candidate),
+                    new CodeGenerationMetrics(
+                        VerificationAttempts: i + 1,
+                        RepairIterationsUsed: i,
+                        VerificationPassed: true,
+                        LastVerificationErrors: []));
             }
 
             if (i == maxRepairIterations)
             {
-                return NormalizeGeneratedCodeOutput(candidate);
+                return new RefinedCodeResult(
+                    NormalizeGeneratedCodeOutput(candidate),
+                    new CodeGenerationMetrics(
+                        VerificationAttempts: i + 1,
+                        RepairIterationsUsed: i,
+                        VerificationPassed: false,
+                        LastVerificationErrors: verification.Errors));
             }
 
             var repairSystemPrompt = """
@@ -646,8 +665,16 @@ public sealed class AgentOrchestrator(
                 .First();
         }
 
-        return NormalizeGeneratedCodeOutput(candidate);
+        return new RefinedCodeResult(
+            NormalizeGeneratedCodeOutput(candidate),
+            new CodeGenerationMetrics(
+                VerificationAttempts: maxRepairIterations + 1,
+                RepairIterationsUsed: maxRepairIterations,
+                VerificationPassed: lastVerification?.IsValid == true,
+                LastVerificationErrors: lastVerification?.Errors ?? []));
     }
+
+    private sealed record RefinedCodeResult(string Output, CodeGenerationMetrics Metrics);
 
     private static bool LooksLikeCodeRequest(string text)
     {

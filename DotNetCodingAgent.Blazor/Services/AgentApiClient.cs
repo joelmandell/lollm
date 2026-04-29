@@ -77,6 +77,16 @@ public sealed class AgentApiClient(HttpClient httpClient)
         return await response.Content.ReadFromJsonAsync<ModelBenchmarkResponse>(cancellationToken);
     }
 
+    public async Task<CodingEvalResponse?> EvaluateCodingAsync(
+        CodingEvalRequest? request = null,
+        CancellationToken cancellationToken = default)
+    {
+        request ??= new CodingEvalRequest();
+        var response = await httpClient.PostAsJsonAsync("/api/model/evaluate-coding", request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<CodingEvalResponse>(cancellationToken);
+    }
+
     public async Task<BackendStatusResponse?> GetBackendStatusAsync(CancellationToken cancellationToken = default)
     {
         return await httpClient.GetFromJsonAsync<BackendStatusResponse>("/api/model/backend-status", cancellationToken);

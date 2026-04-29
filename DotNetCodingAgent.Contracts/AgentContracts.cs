@@ -26,7 +26,14 @@ public sealed record GenerateCodeResponse(
     string Plan,
     string Code,
     string Explanation,
-    IReadOnlyList<string> UsedSources);
+    IReadOnlyList<string> UsedSources,
+    CodeGenerationMetrics? Metrics = null);
+
+public sealed record CodeGenerationMetrics(
+    int VerificationAttempts,
+    int RepairIterationsUsed,
+    bool VerificationPassed,
+    IReadOnlyList<string> LastVerificationErrors);
 
 public sealed record AddKnowledgeSourceRequest(
     string Url,
@@ -87,6 +94,24 @@ public sealed record ModelBenchmarkResponse(
     int AverageScore,
     int CaseCount,
     IReadOnlyList<ModelBenchmarkCaseResult> Results);
+
+public sealed record CodingEvalRequest(
+    IReadOnlyList<string>? Prompts = null,
+    bool UseKnowledge = true,
+    int MaxKnowledgeSnippets = 8);
+
+public sealed record CodingEvalCaseResult(
+    string Prompt,
+    int Score,
+    bool VerificationPassed,
+    int VerificationAttempts,
+    int RepairIterationsUsed,
+    string Notes);
+
+public sealed record CodingEvalResponse(
+    int AverageScore,
+    int CaseCount,
+    IReadOnlyList<CodingEvalCaseResult> Results);
 
 public sealed record ExportCorpusRequest(
     bool IncludeJsonl = true,

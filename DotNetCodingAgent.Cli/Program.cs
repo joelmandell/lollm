@@ -49,6 +49,9 @@ switch (command)
     case "backend-status":
         await RunBackendStatusAsync();
         break;
+    case "evaluate-coding":
+        await RunEvaluateCodingAsync(args);
+        break;
     case "export-corpus":
         await RunExportCorpusAsync(args);
         break;
@@ -104,6 +107,22 @@ async Task RunGenerateAsync(string[] arguments)
     Console.WriteLine();
     Console.WriteLine("CODE:");
     Console.WriteLine(response.Code);
+    if (response.Metrics is not null)
+    {
+        Console.WriteLine();
+        Console.WriteLine("METRICS:");
+        Console.WriteLine($"  Verification passed: {response.Metrics.VerificationPassed}");
+        Console.WriteLine($"  Attempts: {response.Metrics.VerificationAttempts}");
+        Console.WriteLine($"  Repair iterations: {response.Metrics.RepairIterationsUsed}");
+        if (response.Metrics.LastVerificationErrors.Count > 0)
+        {
+            Console.WriteLine("  Last verification errors:");
+            foreach (var error in response.Metrics.LastVerificationErrors.Take(3))
+            {
+                Console.WriteLine($"    - {error}");
+            }
+        }
+    }
 }
 
 async Task RunAddSourceAsync(string[] arguments)
@@ -271,6 +290,30 @@ async Task RunBackendStatusAsync()
     Console.WriteLine($"Transformer healthy: {response.TransformerHealthy}");
 }
 
+async Task RunEvaluateCodingAsync(string[] arguments)
+{
+    var response = await PostAsync<CodingEvalRequest, CodingEvalResponse>(
+        "/api/model/evaluate-coding",
+        new CodingEvalRequest());
+
+    if (response is null)
+    {
+        Console.WriteLine("No response.");
+        return;
+    }
+
+    Console.WriteLine($"Average score: {response.AverageScore}");
+    Console.WriteLine($"Cases: {response.CaseCount}");
+    foreach (var result in response.Results)
+    {
+        Console.WriteLine($"- {result.Prompt}");
+        Console.WriteLine($"  Score: {result.Score}");
+        Console.WriteLine($"  Verification passed: {result.VerificationPassed}");
+        Console.WriteLine($"  Attempts: {result.VerificationAttempts}, Repairs: {result.RepairIterationsUsed}");
+        Console.WriteLine($"  Notes: {result.Notes}");
+    }
+}
+
 async Task RunExportCorpusAsync(string[] arguments)
 {
     var includeJsonl = true;
@@ -400,6 +443,7 @@ void PrintHelp()
     Console.WriteLine("  bootstrap [epochs]");
     Console.WriteLine("  benchmark [maxCases]");
     Console.WriteLine("  backend-status");
+    Console.WriteLine("  evaluate-coding");
     Console.WriteLine("  export-corpus [both|jsonl|text]");
     Console.WriteLine("  train-project <projectTag> <zipPath> [epochs]");
 }
