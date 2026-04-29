@@ -11,8 +11,23 @@ public sealed class AgentOrchestrator(
     public async Task<ChatResponse> ChatAsync(ChatRequest request, CancellationToken cancellationToken)
     {
         var analysis = promptIntelligence.Analyze(request.Prompt);
-        var snippets = await GetSnippetsAsync(request.Prompt, request.UseKnowledge, request.MaxKnowledgeSnippets, cancellationToken);
+        var normalizedProjectTag = NormalizeProjectTag(request.ProjectTag);
+        var snippets = await GetSnippetsAsync(
+            request.Prompt,
+            request.UseKnowledge,
+            request.MaxKnowledgeSnippets,
+            normalizedProjectTag,
+            cancellationToken);
         var knowledgeBlock = BuildKnowledgeBlock(snippets);
+        var rubberDuckInstructions = request.RubberDuckMode
+            ? """
+              RubberDuck reasoning mode:
+              1) State assumptions explicitly.
+              2) Walk through the reasoning step-by-step.
+              3) Highlight uncertainty and tradeoffs.
+              4) Recommend the least disruptive architectural change.
+              """
+            : "RubberDuck reasoning mode: disabled.";
 
         var systemPrompt = $"""
             You are a senior .NET 10 and C# assistant.
@@ -20,6 +35,8 @@ public sealed class AgentOrchestrator(
             Prefer exact, practical C# and .NET guidance.
             Intent: {analysis.Intent}
             Preferred language: {analysis.Language}
+            Project tag: {(normalizedProjectTag ?? "none")}
+            {rubberDuckInstructions}
             """;
 
         var userPrompt = $"""
@@ -35,14 +52,29 @@ public sealed class AgentOrchestrator(
             answer,
             request.ConversationId ?? Guid.NewGuid().ToString("N"),
             snippets.Select(s => s.SourceUrl).Distinct().ToList(),
-            $"Knowledge snippets used: {snippets.Count}");
+            $"Knowledge snippets used: {snippets.Count}. ProjectTag: {(normalizedProjectTag ?? "none")}. RubberDuck: {request.RubberDuckMode}.");
     }
 
     public async Task<GenerateCodeResponse> GenerateCodeAsync(GenerateCodeRequest request, CancellationToken cancellationToken)
     {
         var analysis = promptIntelligence.Analyze(request.Task);
-        var snippets = await GetSnippetsAsync(request.Task, request.UseKnowledge, request.MaxKnowledgeSnippets, cancellationToken);
+        var normalizedProjectTag = NormalizeProjectTag(request.ProjectTag);
+        var snippets = await GetSnippetsAsync(
+            request.Task,
+            request.UseKnowledge,
+            request.MaxKnowledgeSnippets,
+            normalizedProjectTag,
+            cancellationToken);
         var knowledgeBlock = BuildKnowledgeBlock(snippets);
+        var rubberDuckInstructions = request.RubberDuckMode
+            ? """
+              Use rubberduck reasoning to avoid architectural regressions:
+              - State assumptions.
+              - Compare alternatives.
+              - Choose minimally disruptive changes.
+              - Explain why this is safe for existing architecture.
+              """
+            : "Rubberduck reasoning: optional.";
 
         var planningSystemPrompt = """
             You are an agentic planner for .NET engineering work.
@@ -53,6 +85,8 @@ public sealed class AgentOrchestrator(
             Create a step-by-step plan to implement this task in {request.Language}.
             Inferred intent: {analysis.Intent}
             Preferred language: {analysis.Language}
+            Project tag: {(normalizedProjectTag ?? "none")}
+            {rubberDuckInstructions}
 
             Task:
             {request.Task}
@@ -95,6 +129,7 @@ public sealed class AgentOrchestrator(
         string query,
         bool useKnowledge,
         int limit,
+        string? normalizedProjectTag,
         CancellationToken cancellationToken)
     {
         if (!useKnowledge)
@@ -102,7 +137,23 @@ public sealed class AgentOrchestrator(
             return [];
         }
 
-        return await knowledgeRepository.SearchAsync(query, Math.Max(1, limit), cancellationToken);
+        var effectiveLimit = Math.Max(1, limit);
+        if (string.IsNullOrWhiteSpace(normalizedProjectTag))
+        {
+            return await knowledgeRepository.SearchAsync(query, effectiveLimit, cancellationToken);
+        }
+
+        var prefix = ProjectTagHelper.ToSourcePrefix(normalizedProjectTag);
+        var projectLimit = Math.Max(1, (effectiveLimit + 1) / 2);
+        var projectSnippets = await knowledgeRepository.SearchBySourceUrlPrefixAsync(query, prefix, projectLimit, cancellationToken);
+        var globalSnippets = await knowledgeRepository.SearchAsync(query, effectiveLimit, cancellationToken);
+
+        return projectSnippets
+            .Concat(globalSnippets)
+            .GroupBy(s => $"{s.SourceUrl}|{s.Content}")
+            .Select(g => g.First())
+            .Take(effectiveLimit)
+            .ToList();
     }
 
     private static string BuildKnowledgeBlock(IReadOnlyList<KnowledgeSnippet> snippets)
@@ -122,5 +173,15 @@ public sealed class AgentOrchestrator(
         }
 
         return builder.ToString();
+    }
+
+    private static string? NormalizeProjectTag(string? projectTag)
+    {
+        if (string.IsNullOrWhiteSpace(projectTag))
+        {
+            return null;
+        }
+
+        return ProjectTagHelper.Normalize(projectTag);
     }
 }

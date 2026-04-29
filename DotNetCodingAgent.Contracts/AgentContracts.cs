@@ -4,7 +4,9 @@ public sealed record ChatRequest(
     string Prompt,
     string? ConversationId = null,
     bool UseKnowledge = true,
-    int MaxKnowledgeSnippets = 6);
+    int MaxKnowledgeSnippets = 6,
+    string? ProjectTag = null,
+    bool RubberDuckMode = false);
 
 public sealed record ChatResponse(
     string Answer,
@@ -16,7 +18,9 @@ public sealed record GenerateCodeRequest(
     string Task,
     string Language = "csharp",
     bool UseKnowledge = true,
-    int MaxKnowledgeSnippets = 8);
+    int MaxKnowledgeSnippets = 8,
+    string? ProjectTag = null,
+    bool RubberDuckMode = false);
 
 public sealed record GenerateCodeResponse(
     string Plan,
@@ -99,3 +103,12 @@ public sealed record BackendStatusResponse(
     string Provider,
     bool TransformerHealthy,
     string TransformerBaseUrl);
+
+public sealed record ProjectZipTrainingResponse(
+    bool Success,
+    string ProjectTag,
+    int FilesIndexed,
+    int ChunkCount,
+    int TrainedChunks,
+    TrainModelResponse Training,
+    string Message);

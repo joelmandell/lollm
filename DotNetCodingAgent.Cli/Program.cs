@@ -1,4 +1,5 @@
-﻿using System.Net.Http.Json;
+using System.Net.Http.Json;
+using System.Net.Http.Headers;
 using DotNetCodingAgent.Contracts;
 
 var apiBaseUrl = Environment.GetEnvironmentVariable("DOTNET_AGENT_API_BASE_URL") ?? "http://localhost:5101";
@@ -51,6 +52,9 @@ switch (command)
     case "export-corpus":
         await RunExportCorpusAsync(args);
         break;
+    case "train-project":
+        await RunTrainProjectAsync(args);
+        break;
     default:
         Console.WriteLine($"Unknown command: {command}");
         PrintHelp();
@@ -65,8 +69,12 @@ async Task RunChatAsync(string[] arguments)
         return;
     }
 
-    var prompt = string.Join(' ', arguments.Skip(1));
-    var response = await PostAsync<ChatRequest, ChatResponse>("/api/chat", new ChatRequest(prompt));
+    var prompt = BuildCommandText(arguments);
+    var projectTag = GetOptionValue(arguments, "--project");
+    var rubberDuckMode = arguments.Any(a => string.Equals(a, "--rubberduck", StringComparison.OrdinalIgnoreCase));
+    var response = await PostAsync<ChatRequest, ChatResponse>(
+        "/api/chat",
+        new ChatRequest(prompt, ProjectTag: projectTag, RubberDuckMode: rubberDuckMode));
     Console.WriteLine(response?.Answer ?? "No answer.");
 }
 
@@ -78,10 +86,12 @@ async Task RunGenerateAsync(string[] arguments)
         return;
     }
 
-    var task = string.Join(' ', arguments.Skip(1));
+    var task = BuildCommandText(arguments);
+    var projectTag = GetOptionValue(arguments, "--project");
+    var rubberDuckMode = arguments.Any(a => string.Equals(a, "--rubberduck", StringComparison.OrdinalIgnoreCase));
     var response = await PostAsync<GenerateCodeRequest, GenerateCodeResponse>(
         "/api/agent/generate-code",
-        new GenerateCodeRequest(task));
+        new GenerateCodeRequest(task, ProjectTag: projectTag, RubberDuckMode: rubberDuckMode));
 
     if (response is null)
     {
@@ -296,6 +306,65 @@ async Task RunExportCorpusAsync(string[] arguments)
     }
 }
 
+async Task RunTrainProjectAsync(string[] arguments)
+{
+    if (arguments.Length < 3)
+    {
+        Console.WriteLine("Usage: train-project <projectTag> <zipPath> [epochs]");
+        return;
+    }
+
+    var projectTag = arguments[1];
+    var zipPath = arguments[2];
+    var epochs = 1;
+    if (arguments.Length >= 4 && int.TryParse(arguments[3], out var parsedEpochs))
+    {
+        epochs = Math.Max(1, parsedEpochs);
+    }
+
+    if (!File.Exists(zipPath))
+    {
+        Console.WriteLine($"Zip file not found: {zipPath}");
+        return;
+    }
+
+    await using var fileStream = File.OpenRead(zipPath);
+    using var fileContent = new StreamContent(fileStream);
+    fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/zip");
+
+    using var formData = new MultipartFormDataContent
+    {
+        { new StringContent(projectTag), "projectTag" },
+        { new StringContent(epochs.ToString()), "epochs" },
+        { fileContent, "zipFile", Path.GetFileName(zipPath) }
+    };
+
+    var response = await httpClient.PostAsync("/api/model/train-project-zip", formData);
+    var payload = await response.Content.ReadAsStringAsync();
+    if (!response.IsSuccessStatusCode)
+    {
+        Console.WriteLine($"Request failed ({(int)response.StatusCode}): {payload}");
+        return;
+    }
+
+    var data = System.Text.Json.JsonSerializer.Deserialize<ProjectZipTrainingResponse>(payload, new System.Text.Json.JsonSerializerOptions
+    {
+        PropertyNameCaseInsensitive = true
+    });
+
+    if (data is null)
+    {
+        Console.WriteLine("No response.");
+        return;
+    }
+
+    Console.WriteLine(data.Message);
+    Console.WriteLine($"Project: {data.ProjectTag}");
+    Console.WriteLine($"Files indexed: {data.FilesIndexed}");
+    Console.WriteLine($"Chunks indexed: {data.ChunkCount}");
+    Console.WriteLine($"Training chunks: {data.TrainedChunks}");
+}
+
 async Task<TResponse?> PostAsync<TRequest, TResponse>(string route, TRequest request)
 {
     var response = await httpClient.PostAsJsonAsync(route, request);
@@ -319,7 +388,9 @@ void PrintHelp()
     Console.WriteLine();
     Console.WriteLine("Commands:");
     Console.WriteLine("  chat \"question\"");
+    Console.WriteLine("    optional: --project <tag> --rubberduck");
     Console.WriteLine("  generate \"coding task\"");
+    Console.WriteLine("    optional: --project <tag> --rubberduck");
     Console.WriteLine("  add-source \"https://docs-or-github-repo-url\"");
     Console.WriteLine("  list-sources");
     Console.WriteLine("  ingest [optional-url]");
@@ -330,4 +401,41 @@ void PrintHelp()
     Console.WriteLine("  benchmark [maxCases]");
     Console.WriteLine("  backend-status");
     Console.WriteLine("  export-corpus [both|jsonl|text]");
+    Console.WriteLine("  train-project <projectTag> <zipPath> [epochs]");
+}
+
+string? GetOptionValue(string[] arguments, string optionName)
+{
+    for (var i = 0; i < arguments.Length - 1; i++)
+    {
+        if (string.Equals(arguments[i], optionName, StringComparison.OrdinalIgnoreCase))
+        {
+            return arguments[i + 1];
+        }
+    }
+
+    return null;
+}
+
+string BuildCommandText(string[] arguments)
+{
+    var parts = new List<string>();
+    for (var i = 1; i < arguments.Length; i++)
+    {
+        var arg = arguments[i];
+        if (string.Equals(arg, "--rubberduck", StringComparison.OrdinalIgnoreCase))
+        {
+            continue;
+        }
+
+        if (string.Equals(arg, "--project", StringComparison.OrdinalIgnoreCase))
+        {
+            i++;
+            continue;
+        }
+
+        parts.Add(arg);
+    }
+
+    return string.Join(' ', parts);
 }

@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using DotNetCodingAgent.Contracts;
+using Microsoft.AspNetCore.Components.Forms;
 
 namespace DotNetCodingAgent.Blazor.Services;
 
@@ -90,5 +91,28 @@ public sealed class AgentApiClient(HttpClient httpClient)
         var response = await httpClient.PostAsJsonAsync("/api/model/export-corpus", request, cancellationToken);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<ExportCorpusResponse>(cancellationToken);
+    }
+
+    public async Task<ProjectZipTrainingResponse?> TrainProjectZipAsync(
+        string projectTag,
+        IBrowserFile zipFile,
+        int epochs = 1,
+        CancellationToken cancellationToken = default)
+    {
+        await using var stream = zipFile.OpenReadStream(maxAllowedSize: 250 * 1024 * 1024, cancellationToken);
+        using var streamContent = new StreamContent(stream);
+        var contentType = string.IsNullOrWhiteSpace(zipFile.ContentType) ? "application/zip" : zipFile.ContentType;
+        streamContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
+
+        using var formData = new MultipartFormDataContent
+        {
+            { new StringContent(projectTag), "projectTag" },
+            { new StringContent(Math.Max(1, epochs).ToString()), "epochs" },
+            { streamContent, "zipFile", zipFile.Name }
+        };
+
+        var response = await httpClient.PostAsync("/api/model/train-project-zip", formData, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ProjectZipTrainingResponse>(cancellationToken);
     }
 }

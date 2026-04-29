@@ -26,6 +26,12 @@ public sealed class KnowledgeIngestionService(
         {
             try
             {
+                if (!IsWebSource(source.Url))
+                {
+                    skipped++;
+                    continue;
+                }
+
                 var (title, text) = await contentFetcher.FetchAsync(source.Url, cancellationToken);
                 var hash = ComputeHash(text);
                 if (!force && source.LastContentHash == hash)
@@ -72,5 +78,15 @@ public sealed class KnowledgeIngestionService(
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(text));
         return Convert.ToHexString(bytes);
+    }
+
+    private static bool IsWebSource(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        return uri.Scheme is "http" or "https";
     }
 }

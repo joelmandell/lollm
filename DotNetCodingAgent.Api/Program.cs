@@ -32,6 +32,7 @@ builder.Services.AddSingleton<KnowledgeIngestionService>();
 builder.Services.AddSingleton<ModelTrainingService>();
 builder.Services.AddSingleton<ModelBenchmarkService>();
 builder.Services.AddSingleton<ModelStackService>();
+builder.Services.AddSingleton<ProjectZipTrainingService>();
 builder.Services.AddSingleton<TrainingBootstrapService>();
 builder.Services.AddSingleton<AgentOrchestrator>();
 builder.Services.AddHostedService<KnowledgeRefreshWorker>();
@@ -167,6 +168,45 @@ modelGroup.MapGet("/backend-status", async (
     return Results.Ok(response);
 });
 
+modelGroup.MapPost("/train-project-zip", async (
+    HttpRequest httpRequest,
+    ProjectZipTrainingService projectZipTrainingService,
+    CancellationToken cancellationToken) =>
+{
+    if (!httpRequest.HasFormContentType)
+    {
+        return Results.BadRequest(new { error = "Expected multipart/form-data request." });
+    }
+
+    var form = await httpRequest.ReadFormAsync(cancellationToken);
+    var projectTag = form["projectTag"].ToString();
+    if (string.IsNullOrWhiteSpace(projectTag))
+    {
+        return Results.BadRequest(new { error = "projectTag is required." });
+    }
+
+    var epochs = 1;
+    if (int.TryParse(form["epochs"].ToString(), out var parsedEpochs))
+    {
+        epochs = Math.Max(1, parsedEpochs);
+    }
+
+    var zipFile = form.Files.GetFile("zipFile");
+    if (zipFile is null || zipFile.Length <= 0)
+    {
+        return Results.BadRequest(new { error = "zipFile is required." });
+    }
+
+    if (!zipFile.FileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.BadRequest(new { error = "Only .zip files are supported." });
+    }
+
+    await using var stream = zipFile.OpenReadStream();
+    var response = await projectZipTrainingService.TrainFromZipAsync(stream, projectTag, epochs, cancellationToken);
+    return Results.Ok(response);
+});
+
 app.MapGet("/v1/models", () =>
 {
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -178,6 +218,13 @@ app.MapGet("/v1/models", () =>
             new
             {
                 id = "lollm-coder-001",
+                @object = "model",
+                created = now,
+                owned_by = "lollm"
+            },
+            new
+            {
+                id = "lollm-rubberduck-001",
                 @object = "model",
                 created = now,
                 owned_by = "lollm"
@@ -207,7 +254,16 @@ app.MapPost("/v1/chat/completions", async (
         ? userMessage
         : $"{systemMessage}\n\n{userMessage}";
 
-    var response = await orchestrator.ChatAsync(new ChatRequest(composedPrompt), cancellationToken);
+    var normalizedModel = (request.Model ?? "lollm-coder-001").Trim().ToLowerInvariant();
+    var rubberDuckMode = normalizedModel.Contains("rubberduck", StringComparison.OrdinalIgnoreCase);
+
+    var response = await orchestrator.ChatAsync(
+        new ChatRequest(
+            composedPrompt,
+            UseKnowledge: true,
+            MaxKnowledgeSnippets: 8,
+            RubberDuckMode: rubberDuckMode),
+        cancellationToken);
     var completionId = $"chatcmpl-{Guid.NewGuid():N}";
     return Results.Ok(new
     {
@@ -244,7 +300,16 @@ app.MapPost("/v1/completions", async (
         return Results.BadRequest(new { error = new { message = "No prompt provided." } });
     }
 
-    var response = await orchestrator.ChatAsync(new ChatRequest(promptText), cancellationToken);
+    var normalizedModel = (request.Model ?? "lollm-coder-001").Trim().ToLowerInvariant();
+    var rubberDuckMode = normalizedModel.Contains("rubberduck", StringComparison.OrdinalIgnoreCase);
+
+    var response = await orchestrator.ChatAsync(
+        new ChatRequest(
+            promptText,
+            UseKnowledge: true,
+            MaxKnowledgeSnippets: 8,
+            RubberDuckMode: rubberDuckMode),
+        cancellationToken);
     var completionId = $"cmpl-{Guid.NewGuid():N}";
     return Results.Ok(new
     {
@@ -266,6 +331,44 @@ app.MapPost("/v1/completions", async (
             prompt_tokens = 0,
             completion_tokens = 0,
             total_tokens = 0
+        }
+    });
+});
+
+app.MapPost("/v1/responses", async (
+    OpenAiResponsesRequest request,
+    AgentOrchestrator orchestrator,
+    CancellationToken cancellationToken) =>
+{
+    var input = request.Input?.Trim();
+    if (string.IsNullOrWhiteSpace(input))
+    {
+        return Results.BadRequest(new { error = new { message = "No input provided." } });
+    }
+
+    var normalizedModel = (request.Model ?? "lollm-coder-001").Trim().ToLowerInvariant();
+    var rubberDuckMode = normalizedModel.Contains("rubberduck", StringComparison.OrdinalIgnoreCase);
+    var response = await orchestrator.ChatAsync(
+        new ChatRequest(input, UseKnowledge: true, MaxKnowledgeSnippets: 8, RubberDuckMode: rubberDuckMode),
+        cancellationToken);
+
+    return Results.Ok(new
+    {
+        id = $"resp-{Guid.NewGuid():N}",
+        @object = "response",
+        created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+        model = request.Model ?? "lollm-coder-001",
+        output = new[]
+        {
+            new
+            {
+                @type = "message",
+                role = "assistant",
+                content = new[]
+                {
+                    new { @type = "output_text", text = response.Answer }
+                }
+            }
         }
     });
 });
@@ -294,3 +397,7 @@ public sealed record OpenAiChatCompletionsRequest(
 public sealed record OpenAiCompletionsRequest(
     string? Model,
     string Prompt);
+
+public sealed record OpenAiResponsesRequest(
+    string? Model,
+    string? Input);

@@ -29,6 +29,18 @@
 
 <div class="mb-4">
     <h3>Chat</h3>
+    <div class="row mb-3">
+        <div class="col-md-6">
+            <label class="form-label">Project tag (optional)</label>
+            <input class="form-control" @bind="projectTag" />
+        </div>
+        <div class="col-md-6 d-flex align-items-end">
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="rubberDuckMode" @bind="rubberDuckMode" />
+                <label class="form-check-label" for="rubberDuckMode">Rubberduck reasoning mode</label>
+            </div>
+        </div>
+    </div>
     <div class="mb-3">
         <label class="form-label">Prompt</label>
         <textarea class="form-control" @bind="chatPrompt" rows="4"></textarea>
@@ -94,6 +106,8 @@
     private string error = string.Empty;
     private bool isBusy;
     private ModelStatusResponse? modelStatus;
+    private string projectTag = string.Empty;
+    private bool rubberDuckMode = true;
 
     protected override async Task OnInitializedAsync()
     {
@@ -106,7 +120,10 @@
         error = string.Empty;
         try
         {
-            var response = await ApiClient.ChatAsync(new ChatRequest(chatPrompt));
+            var response = await ApiClient.ChatAsync(new ChatRequest(
+                chatPrompt,
+                ProjectTag: string.IsNullOrWhiteSpace(projectTag) ? null : projectTag,
+                RubberDuckMode: rubberDuckMode));
             chatAnswer = response?.Answer ?? "No answer returned.";
         }
         catch (Exception ex)
@@ -125,7 +142,10 @@
         error = string.Empty;
         try
         {
-            var response = await ApiClient.GenerateCodeAsync(new GenerateCodeRequest(codeTask));
+            var response = await ApiClient.GenerateCodeAsync(new GenerateCodeRequest(
+                codeTask,
+                ProjectTag: string.IsNullOrWhiteSpace(projectTag) ? null : projectTag,
+                RubberDuckMode: rubberDuckMode));
             codePlan = response?.Plan ?? "No plan returned.";
             codeOutput = response?.Code ?? "No code returned.";
         }

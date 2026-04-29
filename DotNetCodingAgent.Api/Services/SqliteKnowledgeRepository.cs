@@ -251,6 +251,94 @@ public sealed class SqliteKnowledgeRepository(IOptions<KnowledgeOptions> options
         return chunks;
     }
 
+    public async Task<IReadOnlyList<KnowledgeSnippet>> SearchBySourceUrlPrefixAsync(
+        string query,
+        string sourceUrlPrefix,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var normalizedPrefix = NormalizeSourcePrefix(sourceUrlPrefix);
+        var tokens = TokenRegex
+            .Matches(query)
+            .Select(m => m.Value.Trim().ToLowerInvariant())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct()
+            .Take(12)
+            .ToList();
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        if (tokens.Count == 0)
+        {
+            return await GetRecentSnippetsByPrefixAsync(connection, normalizedPrefix, limit, cancellationToken);
+        }
+
+        var ftsQuery = string.Join(" OR ", tokens.Select(t => $"\"{t.Replace("\"", "\"\"")}\""));
+
+        const string sql = """
+            SELECT source_url, source_title, content
+            FROM knowledge_chunks
+            WHERE knowledge_chunks MATCH $query
+              AND source_url LIKE $sourceUrlLike
+            ORDER BY bm25(knowledge_chunks)
+            LIMIT $limit;
+            """;
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$query", ftsQuery);
+        command.Parameters.AddWithValue("$sourceUrlLike", $"{normalizedPrefix}%");
+        command.Parameters.AddWithValue("$limit", limit);
+
+        var snippets = new List<KnowledgeSnippet>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            snippets.Add(new KnowledgeSnippet(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2)));
+        }
+
+        if (snippets.Count > 0)
+        {
+            return snippets;
+        }
+
+        return await GetRecentSnippetsByPrefixAsync(connection, normalizedPrefix, limit, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<string>> GetChunkContentsBySourceUrlPrefixAsync(
+        string sourceUrlPrefix,
+        CancellationToken cancellationToken)
+    {
+        var normalizedPrefix = NormalizeSourcePrefix(sourceUrlPrefix);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        const string sql = """
+            SELECT content
+            FROM knowledge_chunks
+            WHERE source_url LIKE $sourceUrlLike
+            ORDER BY rowid DESC;
+            """;
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$sourceUrlLike", $"{normalizedPrefix}%");
+
+        var chunks = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            chunks.Add(reader.GetString(0));
+        }
+
+        return chunks;
+    }
+
     private static async Task<IReadOnlyList<KnowledgeSnippet>> GetRecentSnippetsAsync(
         SqliteConnection connection,
         int limit,
@@ -265,6 +353,38 @@ public sealed class SqliteKnowledgeRepository(IOptions<KnowledgeOptions> options
 
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
+        command.Parameters.AddWithValue("$limit", limit);
+
+        var snippets = new List<KnowledgeSnippet>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            snippets.Add(new KnowledgeSnippet(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2)));
+        }
+
+        return snippets;
+    }
+
+    private static async Task<IReadOnlyList<KnowledgeSnippet>> GetRecentSnippetsByPrefixAsync(
+        SqliteConnection connection,
+        string sourceUrlPrefix,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT source_url, source_title, content
+            FROM knowledge_chunks
+            WHERE source_url LIKE $sourceUrlLike
+            ORDER BY rowid DESC
+            LIMIT $limit;
+            """;
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$sourceUrlLike", $"{sourceUrlPrefix}%");
         command.Parameters.AddWithValue("$limit", limit);
 
         var snippets = new List<KnowledgeSnippet>();
@@ -303,5 +423,15 @@ public sealed class SqliteKnowledgeRepository(IOptions<KnowledgeOptions> options
         }
 
         return uri.ToString();
+    }
+
+    private static string NormalizeSourcePrefix(string sourceUrlPrefix)
+    {
+        if (string.IsNullOrWhiteSpace(sourceUrlPrefix))
+        {
+            throw new ArgumentException("Source URL prefix cannot be empty.", nameof(sourceUrlPrefix));
+        }
+
+        return sourceUrlPrefix.Trim();
     }
 }

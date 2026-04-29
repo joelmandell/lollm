@@ -1,5 +1,6 @@
 @page "/training"
 @inject AgentApiClient ApiClient
+@using Microsoft.AspNetCore.Components.Forms
 
 <PageTitle>Model Training</PageTitle>
 
@@ -23,6 +24,32 @@
             <input class="form-control" type="number" min="1" max="20" @bind="epochs" />
         </div>
         <button class="btn btn-outline-success" @onclick="TrainAsync" disabled="@isBusy">Retrain Model</button>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">Train from Project Zip</div>
+    <div class="card-body">
+        <div class="mb-3">
+            <label class="form-label">Project tag</label>
+            <input class="form-control" @bind="projectTag" />
+        </div>
+        <div class="mb-3">
+            <label class="form-label">Project zip (.zip)</label>
+            <InputFile OnChange="OnProjectZipSelected" accept=".zip" />
+            @if (!string.IsNullOrWhiteSpace(selectedZipName))
+            {
+                <p class="mt-2 mb-0"><strong>Selected:</strong> @selectedZipName</p>
+            }
+        </div>
+        <button class="btn btn-outline-primary" @onclick="TrainProjectZipAsync" disabled="@isBusy">Upload + Train Project</button>
+        @if (projectTrainResult is not null)
+        {
+            <p class="mt-3 mb-1"><strong>Project:</strong> @projectTrainResult.ProjectTag</p>
+            <p class="mb-1"><strong>Files indexed:</strong> @projectTrainResult.FilesIndexed</p>
+            <p class="mb-1"><strong>Chunks indexed:</strong> @projectTrainResult.ChunkCount</p>
+            <p class="mb-0"><strong>Trained chunks:</strong> @projectTrainResult.TrainedChunks</p>
+        }
     </div>
 </div>
 
@@ -94,6 +121,10 @@
     private ModelBenchmarkResponse? benchmark;
     private BackendStatusResponse? backendStatus;
     private ExportCorpusResponse? exportResult;
+    private IBrowserFile? selectedProjectZip;
+    private string selectedZipName = string.Empty;
+    private string projectTag = "my-project";
+    private ProjectZipTrainingResponse? projectTrainResult;
 
     protected override async Task OnInitializedAsync()
     {
@@ -238,6 +269,38 @@
         {
             exportResult = await ApiClient.ExportCorpusAsync(true, true);
             message = exportResult?.Message ?? "Corpus exported.";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private void OnProjectZipSelected(InputFileChangeEventArgs args)
+    {
+        selectedProjectZip = args.File;
+        selectedZipName = selectedProjectZip?.Name ?? string.Empty;
+    }
+
+    private async Task TrainProjectZipAsync()
+    {
+        isBusy = true;
+        error = string.Empty;
+        message = string.Empty;
+        try
+        {
+            if (selectedProjectZip is null)
+            {
+                throw new InvalidOperationException("Select a .zip file first.");
+            }
+
+            projectTrainResult = await ApiClient.TrainProjectZipAsync(projectTag, selectedProjectZip, epochs);
+            message = projectTrainResult?.Message ?? "Project training complete.";
+            await RefreshStatusAsync();
         }
         catch (Exception ex)
         {
