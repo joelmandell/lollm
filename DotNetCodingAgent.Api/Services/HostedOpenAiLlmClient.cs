@@ -100,7 +100,6 @@ public sealed class HostedOpenAiLlmClient(
                 "Transformer /generate attempt timed out after {TimeoutSeconds}s (first pass).",
                 GenerateAttemptTimeout.TotalSeconds);
             return BuildTimeoutRescueResponse(
-                userPrompt,
                 "transformer.generate.first-pass-timeout",
                 $"Timeout after {GenerateAttemptTimeout.TotalSeconds:0}s while calling /generate.");
         }
@@ -137,7 +136,6 @@ public sealed class HostedOpenAiLlmClient(
                 "Transformer /generate attempt timed out after {TimeoutSeconds}s (retry pass).",
                 GenerateAttemptTimeout.TotalSeconds);
             return BuildTimeoutRescueResponse(
-                userPrompt,
                 "transformer.generate.retry-timeout",
                 $"Timeout after {GenerateAttemptTimeout.TotalSeconds:0}s while calling /generate retry.");
         }
@@ -145,12 +143,6 @@ public sealed class HostedOpenAiLlmClient(
         if (!IsLowConfidenceFallback(second))
         {
             return second;
-        }
-
-        var rescue = TryBuildDeterministicRescue(userPrompt);
-        if (!string.IsNullOrWhiteSpace(rescue))
-        {
-            return rescue;
         }
 
         return FormatModelError(
@@ -204,50 +196,12 @@ public sealed class HostedOpenAiLlmClient(
         return text.Contains("Unable to produce a high-confidence answer", StringComparison.OrdinalIgnoreCase);
     }
 
-    private string BuildTimeoutRescueResponse(string userPrompt, string stage, string technicalCause)
+    private string BuildTimeoutRescueResponse(string stage, string technicalCause)
     {
-        return TryBuildDeterministicRescue(userPrompt)
-               ?? FormatModelError(
-                   stage,
-                   "The model backend timed out while generating. Retry with a tighter prompt (language/framework/output format).",
-                   technicalCause);
-    }
-
-    private static string? TryBuildDeterministicRescue(string userPrompt)
-    {
-        if (string.IsNullOrWhiteSpace(userPrompt))
-        {
-            return null;
-        }
-
-        var lower = userPrompt.ToLowerInvariant();
-        var wantsHelloEndpoint = lower.Contains("/hello-world", StringComparison.Ordinal)
-            || (lower.Contains("hello world", StringComparison.Ordinal)
-                && lower.Contains("endpoint", StringComparison.Ordinal));
-        var wantsQueryParam = lower.Contains("get param", StringComparison.Ordinal)
-            || lower.Contains("query", StringComparison.Ordinal)
-            || lower.Contains("querystring", StringComparison.Ordinal);
-        var wantsCSharp = lower.Contains("c#", StringComparison.Ordinal)
-            || lower.Contains("csharp", StringComparison.Ordinal)
-            || lower.Contains(".net", StringComparison.Ordinal)
-            || lower.Contains("dotnet", StringComparison.Ordinal);
-
-        if (!wantsHelloEndpoint || !wantsQueryParam || !wantsCSharp)
-        {
-            return null;
-        }
-
-        return """
-            ```csharp
-            var builder = WebApplication.CreateBuilder(args);
-            var app = builder.Build();
-            
-            app.MapGet("/hello-world", (string name) =>
-                Results.Ok($"hello world {name}"));
-            
-            app.Run();
-            ```
-            """;
+        return FormatModelError(
+            stage,
+            "The model backend timed out while generating. Retry with a tighter prompt (language/framework/output format).",
+            technicalCause);
     }
 
     private string? ResolveApiKey()

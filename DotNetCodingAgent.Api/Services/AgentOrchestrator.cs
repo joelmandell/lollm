@@ -67,16 +67,6 @@ public sealed class AgentOrchestrator(
     public async Task<GenerateCodeResponse> GenerateCodeAsync(GenerateCodeRequest request, CancellationToken cancellationToken)
     {
         var analysis = promptIntelligence.Analyze(request.Task);
-        if (TryBuildFastPathResponse(request, out var fastPathResponse))
-        {
-            await evalFeedbackService.RecordGenerationAsync(
-                request,
-                fastPathResponse.Metrics ?? new CodeGenerationMetrics(1, 0, true, []),
-                fastPathResponse.Code,
-                cancellationToken);
-            return fastPathResponse;
-        }
-
         var normalizedProjectTag = NormalizeProjectTag(request.ProjectTag);
         var snippets = await GetSnippetsAsync(
             request.Task,
@@ -154,58 +144,6 @@ public sealed class AgentOrchestrator(
             "Generated from planner + coder + self-critique refinement stages.",
             snippets.Select(s => s.SourceUrl).Distinct().ToList(),
             refined.Metrics);
-    }
-
-    private static bool TryBuildFastPathResponse(GenerateCodeRequest request, out GenerateCodeResponse response)
-    {
-        var task = request.Task ?? string.Empty;
-        var lower = task.ToLowerInvariant();
-        var wantsHelloEndpoint = lower.Contains("/hello-world", StringComparison.Ordinal)
-                                 || (lower.Contains("hello world", StringComparison.Ordinal)
-                                     && lower.Contains("endpoint", StringComparison.Ordinal));
-        var wantsQueryParam = lower.Contains("get param", StringComparison.Ordinal)
-                              || lower.Contains("query", StringComparison.Ordinal)
-                              || lower.Contains("query string", StringComparison.Ordinal);
-        var wantsDotnet = lower.Contains("c#", StringComparison.Ordinal)
-                          || lower.Contains("csharp", StringComparison.Ordinal)
-                          || lower.Contains("dotnet", StringComparison.Ordinal)
-                          || lower.Contains(".net", StringComparison.Ordinal);
-
-        if (!(wantsHelloEndpoint && wantsQueryParam && wantsDotnet))
-        {
-            response = default!;
-            return false;
-        }
-
-        var plan = """
-            1) Create a minimal ASP.NET Core app.
-            2) Add a GET endpoint at /hello-world with a query parameter.
-            3) Return "hello world" plus the parameter value.
-            """;
-        var code = """
-            ```csharp
-            var builder = WebApplication.CreateBuilder(args);
-            var app = builder.Build();
-
-            app.MapGet("/hello-world", (string name) =>
-                Results.Ok($"hello world {name}"));
-
-            app.Run();
-            ```
-
-            Query example: `/hello-world?name=joel`
-            """;
-        response = new GenerateCodeResponse(
-            Plan: plan,
-            Code: code,
-            Explanation: "Applied fast-path generation for a simple minimal API endpoint task.",
-            UsedSources: [],
-            Metrics: new CodeGenerationMetrics(
-                VerificationAttempts: 1,
-                RepairIterationsUsed: 0,
-                VerificationPassed: true,
-                LastVerificationErrors: []));
-        return true;
     }
 
     private async Task<IReadOnlyList<KnowledgeSnippet>> GetSnippetsAsync(
