@@ -20,8 +20,15 @@ public sealed class AgentApiClient(HttpClient httpClient)
             userPrompt,
             cancellationToken);
 
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            var legacyResponse = await httpClient.PostAsJsonAsync("/api/chat", request, cancellationToken);
+            legacyResponse.EnsureSuccessStatusCode();
+            return await legacyResponse.Content.ReadFromJsonAsync<ChatResponse>(cancellationToken);
+        }
+
         return new ChatResponse(
-            Answer: string.IsNullOrWhiteSpace(content) ? "No answer returned." : content,
+            Answer: content,
             ConversationId: request.ConversationId ?? Guid.NewGuid().ToString("N"),
             UsedSources: [],
             AgentNotes: "Response via OpenAI-compatible endpoint.");
@@ -55,6 +62,13 @@ public sealed class AgentApiClient(HttpClient httpClient)
             Task:
             """ + Environment.NewLine + userTask,
             cancellationToken);
+
+        if (ShouldFallbackToLegacyCodeEndpoint(content))
+        {
+            var legacyResponse = await httpClient.PostAsJsonAsync("/api/agent/generate-code", request, cancellationToken);
+            legacyResponse.EnsureSuccessStatusCode();
+            return await legacyResponse.Content.ReadFromJsonAsync<GenerateCodeResponse>(cancellationToken);
+        }
 
         var (plan, code, explanation) = ParseCodeResponse(content);
         return new GenerateCodeResponse(
@@ -333,5 +347,24 @@ public sealed class AgentApiClient(HttpClient httpClient)
         }
 
         return text[(afterFence + 1)..end].Trim();
+    }
+
+    private static bool ShouldFallbackToLegacyCodeEndpoint(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return true;
+        }
+
+        var lower = content.ToLowerInvariant();
+        var hasCodeFence = lower.Contains("```csharp", StringComparison.Ordinal);
+        var hasCSharpSignals = lower.Contains("using ", StringComparison.Ordinal)
+            || lower.Contains("class ", StringComparison.Ordinal)
+            || lower.Contains("public ", StringComparison.Ordinal)
+            || lower.Contains("namespace ", StringComparison.Ordinal)
+            || lower.Contains("mapget(", StringComparison.Ordinal)
+            || lower.Contains("dbcontext", StringComparison.Ordinal);
+
+        return !hasCodeFence && !hasCSharpSignals;
     }
 }
