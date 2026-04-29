@@ -121,6 +121,22 @@ public sealed record FeedbackStatusResponse(
     int EvalRunEntries,
     DateTimeOffset? LastUpdatedUtc);
 
+public sealed record BuildFeedbackCorpusRequest(
+    int MaxItems = 500,
+    int LowScoreThreshold = 65,
+    bool IncludePassingSamples = false,
+    bool IncludeJsonl = true,
+    bool IncludeText = true);
+
+public sealed record BuildFeedbackCorpusResponse(
+    bool Success,
+    int SourceGenerationEntries,
+    int SourceEvalEntries,
+    int SelectedItems,
+    string? JsonlPath,
+    string? TextPath,
+    string Message);
+
 public sealed record ExportCorpusRequest(
     bool IncludeJsonl = true,
     bool IncludeText = true);

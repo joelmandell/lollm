@@ -82,6 +82,32 @@ public sealed class EvalFeedbackService(
             LastUpdatedUtc: lastWrite);
     }
 
+    public (string Directory, string GenerationPath, string EvalRunsPath) GetFeedbackPaths()
+    {
+        return (FeedbackDirectory, GenerationFeedbackPath, EvalRunsPath);
+    }
+
+    public async Task<IReadOnlyList<string>> ReadJsonLinesAsync(string path, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path))
+        {
+            return [];
+        }
+
+        var lines = new List<string>();
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        while (await reader.ReadLineAsync(cancellationToken) is { } line)
+        {
+            if (!string.IsNullOrWhiteSpace(line))
+            {
+                lines.Add(line);
+            }
+        }
+
+        return lines;
+    }
+
     private async Task AppendJsonLineAsync(string path, object payload, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(FeedbackDirectory);

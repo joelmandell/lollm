@@ -55,6 +55,9 @@ switch (command)
     case "feedback-status":
         await RunFeedbackStatusAsync();
         break;
+    case "build-feedback-corpus":
+        await RunBuildFeedbackCorpusAsync(args);
+        break;
     case "export-corpus":
         await RunExportCorpusAsync(args);
         break;
@@ -334,6 +337,50 @@ async Task RunFeedbackStatusAsync()
     Console.WriteLine($"Last updated: {(response.LastUpdatedUtc?.ToString("u") ?? "Never")}");
 }
 
+async Task RunBuildFeedbackCorpusAsync(string[] arguments)
+{
+    var maxItems = 500;
+    if (arguments.Length >= 2 && int.TryParse(arguments[1], out var parsedMax))
+    {
+        maxItems = Math.Max(1, parsedMax);
+    }
+
+    var threshold = 65;
+    if (arguments.Length >= 3 && int.TryParse(arguments[2], out var parsedThreshold))
+    {
+        threshold = Math.Clamp(parsedThreshold, 0, 100);
+    }
+
+    var response = await PostAsync<BuildFeedbackCorpusRequest, BuildFeedbackCorpusResponse>(
+        "/api/model/build-feedback-corpus",
+        new BuildFeedbackCorpusRequest(
+            MaxItems: maxItems,
+            LowScoreThreshold: threshold,
+            IncludePassingSamples: false,
+            IncludeJsonl: true,
+            IncludeText: true));
+
+    if (response is null)
+    {
+        Console.WriteLine("No response.");
+        return;
+    }
+
+    Console.WriteLine(response.Message);
+    Console.WriteLine($"Source generation entries: {response.SourceGenerationEntries}");
+    Console.WriteLine($"Source eval entries: {response.SourceEvalEntries}");
+    Console.WriteLine($"Selected items: {response.SelectedItems}");
+    if (!string.IsNullOrWhiteSpace(response.JsonlPath))
+    {
+        Console.WriteLine($"JSONL: {response.JsonlPath}");
+    }
+
+    if (!string.IsNullOrWhiteSpace(response.TextPath))
+    {
+        Console.WriteLine($"Text: {response.TextPath}");
+    }
+}
+
 async Task RunExportCorpusAsync(string[] arguments)
 {
     var includeJsonl = true;
@@ -465,6 +512,7 @@ void PrintHelp()
     Console.WriteLine("  backend-status");
     Console.WriteLine("  evaluate-coding");
     Console.WriteLine("  feedback-status");
+    Console.WriteLine("  build-feedback-corpus [maxItems] [lowScoreThreshold]");
     Console.WriteLine("  export-corpus [both|jsonl|text]");
     Console.WriteLine("  train-project <projectTag> <zipPath> [epochs]");
 }

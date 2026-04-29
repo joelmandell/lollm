@@ -97,6 +97,16 @@ public sealed class AgentApiClient(HttpClient httpClient)
         return await httpClient.GetFromJsonAsync<FeedbackStatusResponse>("/api/model/feedback-status", cancellationToken);
     }
 
+    public async Task<BuildFeedbackCorpusResponse?> BuildFeedbackCorpusAsync(
+        BuildFeedbackCorpusRequest? request = null,
+        CancellationToken cancellationToken = default)
+    {
+        request ??= new BuildFeedbackCorpusRequest();
+        var response = await httpClient.PostAsJsonAsync("/api/model/build-feedback-corpus", request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<BuildFeedbackCorpusResponse>(cancellationToken);
+    }
+
     public async Task<ExportCorpusResponse?> ExportCorpusAsync(
         bool includeJsonl = true,
         bool includeText = true,

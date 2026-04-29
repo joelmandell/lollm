@@ -52,6 +52,7 @@ builder.Services.AddSingleton<ModelTrainingService>();
 builder.Services.AddSingleton<ModelBenchmarkService>();
 builder.Services.AddSingleton<CodingEvalService>();
 builder.Services.AddSingleton<ModelStackService>();
+builder.Services.AddSingleton<FeedbackCorpusService>();
 builder.Services.AddSingleton<ProjectZipTrainingService>();
 builder.Services.AddSingleton<TrainingBootstrapService>();
 builder.Services.AddSingleton<AgentOrchestrator>();
@@ -202,6 +203,15 @@ modelGroup.MapGet("/feedback-status", async (
     CancellationToken cancellationToken) =>
 {
     var response = await evalFeedbackService.GetStatusAsync(cancellationToken);
+    return Results.Ok(response);
+});
+
+modelGroup.MapPost("/build-feedback-corpus", async (
+    BuildFeedbackCorpusRequest request,
+    FeedbackCorpusService feedbackCorpusService,
+    CancellationToken cancellationToken) =>
+{
+    var response = await feedbackCorpusService.BuildAsync(request, cancellationToken);
     return Results.Ok(response);
 });
 
