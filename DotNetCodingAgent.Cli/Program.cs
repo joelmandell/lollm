@@ -61,6 +61,12 @@ switch (command)
     case "run-improvement-cycle":
         await RunImprovementCycleAsync(args);
         break;
+    case "run-improvement-training":
+        await RunImprovementTrainingAsync(args);
+        break;
+    case "improvement-training-status":
+        await RunImprovementTrainingStatusAsync();
+        break;
     case "export-corpus":
         await RunExportCorpusAsync(args);
         break;
@@ -424,6 +430,61 @@ async Task RunImprovementCycleAsync(string[] arguments)
     Console.WriteLine($"Feedback eval entries: {response.FeedbackStatus.EvalRunEntries}");
 }
 
+async Task RunImprovementTrainingAsync(string[] arguments)
+{
+    var maxItems = 500;
+    if (arguments.Length >= 2 && int.TryParse(arguments[1], out var parsedMax))
+    {
+        maxItems = Math.Max(1, parsedMax);
+    }
+
+    var threshold = 65;
+    if (arguments.Length >= 3 && int.TryParse(arguments[2], out var parsedThreshold))
+    {
+        threshold = Math.Clamp(parsedThreshold, 0, 100);
+    }
+
+    var response = await PostAsync<RunImprovementTrainingRequest, RunImprovementTrainingResponse>(
+        "/api/model/run-improvement-training",
+        new RunImprovementTrainingRequest(
+            FeedbackCorpusMaxItems: maxItems,
+            FeedbackLowScoreThreshold: threshold,
+            IncludePassingSamplesInCorpus: false,
+            SkipEval: true,
+            SkipExport: true));
+
+    if (response is null)
+    {
+        Console.WriteLine("No response.");
+        return;
+    }
+
+    Console.WriteLine(response.Message);
+    Console.WriteLine($"Started process: {response.ProcessId}");
+    Console.WriteLine($"Command: {response.Command}");
+    Console.WriteLine($"Log: {response.LogPath}");
+    Console.WriteLine($"Eval average: {response.Cycle.Evaluation.AverageScore}");
+    Console.WriteLine($"Corpus items: {response.Cycle.FeedbackCorpus.SelectedItems}");
+}
+
+async Task RunImprovementTrainingStatusAsync()
+{
+    var response = await httpClient.GetFromJsonAsync<ImprovementTrainingStatusResponse>("/api/model/improvement-training-status");
+    if (response is null)
+    {
+        Console.WriteLine("No improvement training status available.");
+        return;
+    }
+
+    Console.WriteLine($"Running: {response.IsRunning}");
+    Console.WriteLine($"ProcessId: {(response.ProcessId?.ToString() ?? "n/a")}");
+    Console.WriteLine($"Log: {response.LogPath ?? "n/a"}");
+    Console.WriteLine($"Started: {(response.StartedUtc?.ToString("u") ?? "n/a")}");
+    Console.WriteLine($"Completed: {(response.CompletedUtc?.ToString("u") ?? "n/a")}");
+    Console.WriteLine($"ExitCode: {(response.ExitCode?.ToString() ?? "n/a")}");
+    Console.WriteLine($"Message: {response.Message}");
+}
+
 async Task RunExportCorpusAsync(string[] arguments)
 {
     var includeJsonl = true;
@@ -557,6 +618,8 @@ void PrintHelp()
     Console.WriteLine("  feedback-status");
     Console.WriteLine("  build-feedback-corpus [maxItems] [lowScoreThreshold]");
     Console.WriteLine("  run-improvement-cycle [maxItems] [lowScoreThreshold]");
+    Console.WriteLine("  run-improvement-training [maxItems] [lowScoreThreshold]");
+    Console.WriteLine("  improvement-training-status");
     Console.WriteLine("  export-corpus [both|jsonl|text]");
     Console.WriteLine("  train-project <projectTag> <zipPath> [epochs]");
 }

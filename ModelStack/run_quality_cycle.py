@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--skip-export", action="store_true")
     parser.add_argument("--skip-eval", action="store_true")
     parser.add_argument("--fetch-github-quality", action="store_true")
+    parser.add_argument("--feedback-corpus", default=None, help="Optional extra corpus path relative to modelstack-dir.")
     args = parser.parse_args()
 
     root = Path.cwd()
@@ -50,9 +51,14 @@ def main():
     github_corpus = modelstack_dir / "data/github_csharp_quality_corpus.txt"
     if github_corpus.exists():
         extra_corpora.append("data/github_csharp_quality_corpus.txt")
+    if args.feedback_corpus:
+        feedback_corpus = modelstack_dir / args.feedback_corpus
+        if feedback_corpus.exists():
+            extra_corpora.append(args.feedback_corpus)
 
     train_args = [
         "train_transformer.py",
+        "--data-dir", "data",
         "--tokenizer", str(profile["tokenizer"]),
         "--extra-corpus", ",".join(extra_corpora),
         "--extra-weight", str(profile.get("extra_weight", 4)),

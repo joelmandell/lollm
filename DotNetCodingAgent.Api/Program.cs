@@ -54,6 +54,7 @@ builder.Services.AddSingleton<CodingEvalService>();
 builder.Services.AddSingleton<ModelStackService>();
 builder.Services.AddSingleton<FeedbackCorpusService>();
 builder.Services.AddSingleton<ImprovementCycleService>();
+builder.Services.AddSingleton<ImprovementTrainingService>();
 builder.Services.AddSingleton<ProjectZipTrainingService>();
 builder.Services.AddSingleton<TrainingBootstrapService>();
 builder.Services.AddSingleton<AgentOrchestrator>();
@@ -222,6 +223,22 @@ modelGroup.MapPost("/run-improvement-cycle", async (
     CancellationToken cancellationToken) =>
 {
     var response = await improvementCycleService.RunAsync(request, cancellationToken);
+    return Results.Ok(response);
+});
+
+modelGroup.MapPost("/run-improvement-training", async (
+    RunImprovementTrainingRequest request,
+    ImprovementTrainingService improvementTrainingService,
+    CancellationToken cancellationToken) =>
+{
+    var response = await improvementTrainingService.RunAsync(request, cancellationToken);
+    return Results.Ok(response);
+});
+
+modelGroup.MapGet("/improvement-training-status", (
+    ImprovementTrainingService improvementTrainingService) =>
+{
+    var response = improvementTrainingService.GetStatus();
     return Results.Ok(response);
 });
 

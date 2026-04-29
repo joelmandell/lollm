@@ -152,6 +152,33 @@ public sealed record RunImprovementCycleResponse(
     FeedbackStatusResponse FeedbackStatus,
     string Message);
 
+public sealed record RunImprovementTrainingRequest(
+    IReadOnlyList<string>? Prompts = null,
+    bool UseKnowledge = true,
+    int MaxKnowledgeSnippets = 8,
+    int FeedbackCorpusMaxItems = 500,
+    int FeedbackLowScoreThreshold = 65,
+    bool IncludePassingSamplesInCorpus = false,
+    bool SkipEval = true,
+    bool SkipExport = true);
+
+public sealed record RunImprovementTrainingResponse(
+    bool Success,
+    RunImprovementCycleResponse Cycle,
+    int ProcessId,
+    string Command,
+    string LogPath,
+    string Message);
+
+public sealed record ImprovementTrainingStatusResponse(
+    bool IsRunning,
+    int? ProcessId,
+    string? LogPath,
+    DateTimeOffset? StartedUtc,
+    DateTimeOffset? CompletedUtc,
+    int? ExitCode,
+    string Message);
+
 public sealed record ExportCorpusRequest(
     bool IncludeJsonl = true,
     bool IncludeText = true);
