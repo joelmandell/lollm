@@ -159,31 +159,42 @@ public sealed class AgentOrchestrator(
             return [];
         }
 
+        using var retrievalCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        retrievalCts.CancelAfter(TimeSpan.FromSeconds(6));
+        var retrievalToken = retrievalCts.Token;
+
         var effectiveLimit = Math.Max(1, limit);
-        if (string.IsNullOrWhiteSpace(normalizedProjectTag))
+        try
         {
-            var globalOnly = await knowledgeRepository.SearchAsync(query, effectiveLimit * 3, cancellationToken);
-            return globalOnly
-                .DistinctBy(s => $"{s.SourceUrl}|{s.Content}")
+            if (string.IsNullOrWhiteSpace(normalizedProjectTag))
+            {
+                var globalOnly = await knowledgeRepository.SearchAsync(query, effectiveLimit * 3, retrievalToken);
+                return globalOnly
+                    .DistinctBy(s => $"{s.SourceUrl}|{s.Content}")
+                    .Where(s => ShouldKeepSnippetForPrompt(query, analysis, s))
+                    .OrderByDescending(s => ScoreSnippet(query, analysis, s))
+                    .Take(effectiveLimit)
+                    .ToList();
+            }
+
+            var prefix = ProjectTagHelper.ToSourcePrefix(normalizedProjectTag);
+            var projectLimit = Math.Max(1, (effectiveLimit + 1) / 2);
+            var projectSnippets = await knowledgeRepository.SearchBySourceUrlPrefixAsync(query, prefix, projectLimit, retrievalToken);
+            var globalSnippets = await knowledgeRepository.SearchAsync(query, effectiveLimit, retrievalToken);
+
+            return projectSnippets
+                .Concat(globalSnippets)
+                .GroupBy(s => $"{s.SourceUrl}|{s.Content}")
+                .Select(g => g.First())
                 .Where(s => ShouldKeepSnippetForPrompt(query, analysis, s))
                 .OrderByDescending(s => ScoreSnippet(query, analysis, s))
                 .Take(effectiveLimit)
                 .ToList();
         }
-
-        var prefix = ProjectTagHelper.ToSourcePrefix(normalizedProjectTag);
-        var projectLimit = Math.Max(1, (effectiveLimit + 1) / 2);
-        var projectSnippets = await knowledgeRepository.SearchBySourceUrlPrefixAsync(query, prefix, projectLimit, cancellationToken);
-        var globalSnippets = await knowledgeRepository.SearchAsync(query, effectiveLimit, cancellationToken);
-
-        return projectSnippets
-            .Concat(globalSnippets)
-            .GroupBy(s => $"{s.SourceUrl}|{s.Content}")
-            .Select(g => g.First())
-            .Where(s => ShouldKeepSnippetForPrompt(query, analysis, s))
-            .OrderByDescending(s => ScoreSnippet(query, analysis, s))
-            .Take(effectiveLimit)
-            .ToList();
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return [];
+        }
     }
 
     private static bool ShouldKeepSnippetForPrompt(string query, PromptAnalysis analysis, KnowledgeSnippet snippet)
@@ -368,90 +379,21 @@ public sealed class AgentOrchestrator(
         bool rubberDuckMode,
         CancellationToken cancellationToken)
     {
-        var chatCandidates = await GenerateCandidatesAsync(systemPrompt, userPrompt, 3, cancellationToken);
-        var draft = chatCandidates
-            .OrderByDescending(c => ScoreChatCandidate(userPrompt, c))
-            .First();
-
-        var criticSystemPrompt = """
-            You are a strict .NET response reviewer.
-            Evaluate the answer for factual correctness, directness, architecture safety, and missing assumptions.
-            Return only concise critique bullets.
-            """;
-
-        var criticPrompt = $"""
-            Intent: {analysis.Intent}
-            Preferred language: {analysis.Language}
-            Project tag: {(normalizedProjectTag ?? "none")}
-            RubberDuck mode: {rubberDuckMode}
-
-            User request and context:
-            {userPrompt}
-
-            Candidate answer:
-            {draft}
-
-            Critique checklist:
-            - Is it directly answering the request?
-            - Is .NET/C# guidance concrete and technically sound?
-            - Does it avoid risky or architecture-breaking recommendations?
-            - Are assumptions/tradeoffs explicit when uncertainty exists?
-            """;
-
-        var critique = await llmClient.GenerateAsync(criticSystemPrompt, criticPrompt, cancellationToken);
-
-        var refineSystemPrompt = """
-            You are a principal .NET assistant revising a draft answer.
-            Keep it concise, accurate, and directly useful.
-            Preserve good parts; fix issues from critique.
-            """;
-
-        var refinePrompt = $"""
-            Original request and context:
-            {userPrompt}
-
-            Draft answer:
-            {draft}
-
-            Critique:
-            {critique}
-
-            Produce the final improved answer only.
-            """;
-
-        var refined = await llmClient.GenerateAsync(refineSystemPrompt, refinePrompt, cancellationToken);
-        if (!LooksLikeCodeRequest(userPrompt))
+        var fast = await llmClient.GenerateAsync(systemPrompt, userPrompt, cancellationToken);
+        if (!IsLowConfidenceSurface(fast))
         {
-            return refined;
+            return fast;
         }
 
-        var refinedScore = ScoreCodeCandidate(userPrompt, refined);
-        if (refinedScore >= 65)
-        {
-            return NormalizeGeneratedCodeOutput(refined);
-        }
-
-        var rescueSystemPrompt = """
-            You are a principal .NET coding assistant.
-            Return concrete compile-ready code, not planning text.
-            """;
-
-        var rescuePrompt = $"""
-            Original request:
+        var retryPrompt = $"""
             {userPrompt}
-
-            Previous answer was too weak:
-            {refined}
 
             Hard requirements:
-            - Start with one csharp code block.
-            - Include concrete endpoints/types asked by the prompt.
-            - Avoid generic planning text.
-            - Keep explanation brief after code.
+            - Do not emit fallback/disclaimer text.
+            - Return concrete .NET guidance directly.
+            - Be concise.
             """;
-
-        var rescued = await llmClient.GenerateAsync(rescueSystemPrompt, rescuePrompt, cancellationToken);
-        return ScoreCodeCandidate(userPrompt, rescued) > refinedScore ? rescued : refined;
+        return await llmClient.GenerateAsync(systemPrompt, retryPrompt, cancellationToken);
     }
 
     private async Task<RefinedCodeResult> GenerateRefinedCodeAsync(
@@ -830,6 +772,11 @@ public sealed class AgentOrchestrator(
         var promptLower = userPrompt.ToLowerInvariant();
         var outputLower = candidate.ToLowerInvariant();
 
+        if (IsLowConfidenceSurface(candidate))
+        {
+            return -120;
+        }
+
         if (LooksLikeCodeRequest(userPrompt))
         {
             score += ScoreCodeCandidate(userPrompt, candidate);
@@ -855,6 +802,11 @@ public sealed class AgentOrchestrator(
         return score;
     }
 
+    private static bool IsLowConfidenceSurface(string text)
+    {
+        return text.Contains("Unable to produce a high-confidence answer", StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task<IReadOnlyList<string>> GenerateCandidatesAsync(
         string systemPrompt,
         string userPrompt,
@@ -871,6 +823,17 @@ public sealed class AgentOrchestrator(
                 Variation hint: exploration path {Guid.NewGuid():N}
                 """;
             var candidate = await llmClient.GenerateAsync(systemPrompt, variantPrompt, cancellationToken);
+            if (IsLowConfidenceSurface(candidate))
+            {
+                var constrainedPrompt = $"""
+                    {userPrompt}
+
+                    Hard requirements:
+                    - Do not return fallback/disclaimer text.
+                    - Return concrete output immediately.
+                    """;
+                candidate = await llmClient.GenerateAsync(systemPrompt, constrainedPrompt, cancellationToken);
+            }
             candidates.Add(candidate);
         }
 

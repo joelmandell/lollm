@@ -8,6 +8,8 @@ namespace DotNetCodingAgent.Api.Services;
 
 public sealed class HostedOpenAiLlmClient(HttpClient httpClient, IOptions<ModelBackendOptions> options)
 {
+    private static readonly TimeSpan ChatCompletionsAttemptTimeout = TimeSpan.FromSeconds(4);
+    private static readonly TimeSpan GenerateAttemptTimeout = TimeSpan.FromSeconds(14);
     private readonly ModelBackendOptions _options = options.Value;
 
     public async Task<string> GenerateAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken)
@@ -32,8 +34,22 @@ public sealed class HostedOpenAiLlmClient(HttpClient httpClient, IOptions<ModelB
             temperature = 0.2
         });
 
-        using var response = await httpClient.SendAsync(request, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        HttpResponseMessage response;
+        string body;
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(ChatCompletionsAttemptTimeout);
+            response = await httpClient.SendAsync(request, timeoutCts.Token);
+            body = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return await GenerateViaTransformerEndpointAsync(systemPrompt, userPrompt, cancellationToken);
+        }
+
+        using (response)
+        {
         if (!response.IsSuccessStatusCode)
         {
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
@@ -53,24 +69,91 @@ public sealed class HostedOpenAiLlmClient(HttpClient httpClient, IOptions<ModelB
         }
 
         return content;
+        }
     }
 
     private async Task<string> GenerateViaTransformerEndpointAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken)
+    {
+        string first;
+        try
+        {
+            first = await GenerateViaTransformerOnceAsync(
+                systemPrompt,
+                userPrompt,
+                maxTokens: 320,
+                temperature: 0.25,
+                topK: 72,
+                repetitionPenalty: 1.12,
+                minNewTokens: 48,
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return "The model backend timed out while generating. Retry with a tighter prompt (language/framework/output format).";
+        }
+
+        if (!IsLowConfidenceFallback(first))
+        {
+            return first;
+        }
+
+        var retryPrompt = $"""
+            {userPrompt}
+
+            Hard requirements:
+            - Do not emit fallback/disclaimer text.
+            - Return concrete, directly usable output.
+            - Prefer concise, specific code or steps.
+            """;
+        string second;
+        try
+        {
+            second = await GenerateViaTransformerOnceAsync(
+                systemPrompt,
+                retryPrompt,
+                maxTokens: 360,
+                temperature: 0.2,
+                topK: 64,
+                repetitionPenalty: 1.10,
+                minNewTokens: 40,
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return "The model backend timed out while generating. Retry with a tighter prompt (language/framework/output format).";
+        }
+
+        return IsLowConfidenceFallback(second)
+            ? "The local model is currently under-confident for this prompt. Please retry with tighter constraints (language, framework, output format) while retraining continues."
+            : second;
+    }
+
+    private async Task<string> GenerateViaTransformerOnceAsync(
+        string systemPrompt,
+        string userPrompt,
+        int maxTokens,
+        double temperature,
+        int topK,
+        double repetitionPenalty,
+        int minNewTokens,
+        CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "generate");
         request.Content = JsonContent.Create(new
         {
             system_prompt = systemPrompt,
             user_prompt = userPrompt,
-            max_tokens = 512,
-            temperature = 0.3,
-            top_k = 96,
-            repetition_penalty = 1.14,
-            min_new_tokens = 96
+            max_tokens = maxTokens,
+            temperature,
+            top_k = topK,
+            repetition_penalty = repetitionPenalty,
+            min_new_tokens = minNewTokens
         });
 
-        using var response = await httpClient.SendAsync(request, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(GenerateAttemptTimeout);
+        using var response = await httpClient.SendAsync(request, timeoutCts.Token);
+        var body = await response.Content.ReadAsStringAsync(timeoutCts.Token);
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException($"Hosted backend fallback /generate failed ({response.StatusCode}): {body}");
@@ -84,6 +167,11 @@ public sealed class HostedOpenAiLlmClient(HttpClient httpClient, IOptions<ModelB
         }
 
         return text;
+    }
+
+    private static bool IsLowConfidenceFallback(string text)
+    {
+        return text.Contains("Unable to produce a high-confidence answer", StringComparison.OrdinalIgnoreCase);
     }
 
     private string? ResolveApiKey()
