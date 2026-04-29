@@ -107,6 +107,16 @@ public sealed class AgentApiClient(HttpClient httpClient)
         return await response.Content.ReadFromJsonAsync<BuildFeedbackCorpusResponse>(cancellationToken);
     }
 
+    public async Task<RunImprovementCycleResponse?> RunImprovementCycleAsync(
+        RunImprovementCycleRequest? request = null,
+        CancellationToken cancellationToken = default)
+    {
+        request ??= new RunImprovementCycleRequest();
+        var response = await httpClient.PostAsJsonAsync("/api/model/run-improvement-cycle", request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<RunImprovementCycleResponse>(cancellationToken);
+    }
+
     public async Task<ExportCorpusResponse?> ExportCorpusAsync(
         bool includeJsonl = true,
         bool includeText = true,

@@ -137,6 +137,21 @@ public sealed record BuildFeedbackCorpusResponse(
     string? TextPath,
     string Message);
 
+public sealed record RunImprovementCycleRequest(
+    IReadOnlyList<string>? Prompts = null,
+    bool UseKnowledge = true,
+    int MaxKnowledgeSnippets = 8,
+    int FeedbackCorpusMaxItems = 500,
+    int FeedbackLowScoreThreshold = 65,
+    bool IncludePassingSamplesInCorpus = false);
+
+public sealed record RunImprovementCycleResponse(
+    bool Success,
+    CodingEvalResponse Evaluation,
+    BuildFeedbackCorpusResponse FeedbackCorpus,
+    FeedbackStatusResponse FeedbackStatus,
+    string Message);
+
 public sealed record ExportCorpusRequest(
     bool IncludeJsonl = true,
     bool IncludeText = true);

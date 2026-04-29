@@ -58,6 +58,9 @@ switch (command)
     case "build-feedback-corpus":
         await RunBuildFeedbackCorpusAsync(args);
         break;
+    case "run-improvement-cycle":
+        await RunImprovementCycleAsync(args);
+        break;
     case "export-corpus":
         await RunExportCorpusAsync(args);
         break;
@@ -381,6 +384,46 @@ async Task RunBuildFeedbackCorpusAsync(string[] arguments)
     }
 }
 
+async Task RunImprovementCycleAsync(string[] arguments)
+{
+    var maxItems = 500;
+    if (arguments.Length >= 2 && int.TryParse(arguments[1], out var parsedMax))
+    {
+        maxItems = Math.Max(1, parsedMax);
+    }
+
+    var threshold = 65;
+    if (arguments.Length >= 3 && int.TryParse(arguments[2], out var parsedThreshold))
+    {
+        threshold = Math.Clamp(parsedThreshold, 0, 100);
+    }
+
+    var response = await PostAsync<RunImprovementCycleRequest, RunImprovementCycleResponse>(
+        "/api/model/run-improvement-cycle",
+        new RunImprovementCycleRequest(
+            FeedbackCorpusMaxItems: maxItems,
+            FeedbackLowScoreThreshold: threshold,
+            IncludePassingSamplesInCorpus: false));
+
+    if (response is null)
+    {
+        Console.WriteLine("No response.");
+        return;
+    }
+
+    Console.WriteLine(response.Message);
+    Console.WriteLine($"Success: {response.Success}");
+    Console.WriteLine($"Eval average: {response.Evaluation.AverageScore} ({response.Evaluation.CaseCount} cases)");
+    Console.WriteLine($"Corpus items: {response.FeedbackCorpus.SelectedItems}");
+    if (!string.IsNullOrWhiteSpace(response.FeedbackCorpus.JsonlPath))
+    {
+        Console.WriteLine($"Corpus JSONL: {response.FeedbackCorpus.JsonlPath}");
+    }
+
+    Console.WriteLine($"Feedback generation entries: {response.FeedbackStatus.GenerationFeedbackEntries}");
+    Console.WriteLine($"Feedback eval entries: {response.FeedbackStatus.EvalRunEntries}");
+}
+
 async Task RunExportCorpusAsync(string[] arguments)
 {
     var includeJsonl = true;
@@ -513,6 +556,7 @@ void PrintHelp()
     Console.WriteLine("  evaluate-coding");
     Console.WriteLine("  feedback-status");
     Console.WriteLine("  build-feedback-corpus [maxItems] [lowScoreThreshold]");
+    Console.WriteLine("  run-improvement-cycle [maxItems] [lowScoreThreshold]");
     Console.WriteLine("  export-corpus [both|jsonl|text]");
     Console.WriteLine("  train-project <projectTag> <zipPath> [epochs]");
 }
