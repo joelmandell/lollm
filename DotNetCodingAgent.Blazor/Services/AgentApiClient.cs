@@ -8,18 +8,61 @@ public sealed class AgentApiClient(HttpClient httpClient)
 {
     public async Task<ChatResponse?> ChatAsync(ChatRequest request, CancellationToken cancellationToken = default)
     {
-        var response = await httpClient.PostAsJsonAsync("/api/chat", request, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<ChatResponse>(cancellationToken);
+        var model = request.RubberDuckMode ? "lollm-rubberduck-001" : "lollm-coder-001";
+        var userPrompt = BuildPromptWithContext(
+            request.Prompt,
+            request.ProjectTag,
+            request.UseKnowledge,
+            request.MaxKnowledgeSnippets);
+        var content = await RequestAssistantTextAsync(
+            model,
+            "You are a .NET 10 coding assistant. Return concrete, compile-ready C# guidance.",
+            userPrompt,
+            cancellationToken);
+
+        return new ChatResponse(
+            Answer: string.IsNullOrWhiteSpace(content) ? "No answer returned." : content,
+            ConversationId: request.ConversationId ?? Guid.NewGuid().ToString("N"),
+            UsedSources: [],
+            AgentNotes: "Response via OpenAI-compatible endpoint.");
     }
 
     public async Task<GenerateCodeResponse?> GenerateCodeAsync(
         GenerateCodeRequest request,
         CancellationToken cancellationToken = default)
     {
-        var response = await httpClient.PostAsJsonAsync("/api/agent/generate-code", request, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<GenerateCodeResponse>(cancellationToken);
+        var model = request.RubberDuckMode ? "lollm-rubberduck-001" : "lollm-coder-001";
+        var userTask = BuildPromptWithContext(
+            request.Task,
+            request.ProjectTag,
+            request.UseKnowledge,
+            request.MaxKnowledgeSnippets);
+
+        var content = await RequestAssistantTextAsync(
+            model,
+            "You are a .NET 10 coding assistant. Return compile-ready C# only for requested scope.",
+            """
+            Generate solution output in this exact markdown shape:
+            ## Plan
+            - concise implementation steps
+            ## Code
+            ```csharp
+            // complete code
+            ```
+            ## Explanation
+            - key behavior notes
+
+            Task:
+            """ + Environment.NewLine + userTask,
+            cancellationToken);
+
+        var (plan, code, explanation) = ParseCodeResponse(content);
+        return new GenerateCodeResponse(
+            Plan: plan,
+            Code: code,
+            Explanation: explanation,
+            UsedSources: [],
+            Metrics: null);
     }
 
     public async Task<IReadOnlyList<KnowledgeSourceDto>> GetSourcesAsync(CancellationToken cancellationToken = default)
@@ -180,5 +223,115 @@ public sealed class AgentApiClient(HttpClient httpClient)
         var response = await httpClient.PostAsync("/api/model/train-project-zip", formData, cancellationToken);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<ProjectZipTrainingResponse>(cancellationToken);
+    }
+
+    private sealed record OpenAiChatMessage(string Role, string Content);
+
+    private sealed record OpenAiChatCompletionsRequest(
+        string Model,
+        IReadOnlyList<OpenAiChatMessage> Messages);
+
+    private sealed record OpenAiChatChoice(OpenAiChatMessage Message);
+
+    private sealed record OpenAiChatCompletionsResponse(IReadOnlyList<OpenAiChatChoice> Choices);
+
+    private async Task<string> RequestAssistantTextAsync(
+        string model,
+        string systemPrompt,
+        string userPrompt,
+        CancellationToken cancellationToken)
+    {
+        var openAiRequest = new OpenAiChatCompletionsRequest(
+            Model: model,
+            Messages:
+            [
+                new OpenAiChatMessage("system", systemPrompt),
+                new OpenAiChatMessage("user", userPrompt)
+            ]);
+
+        var response = await httpClient.PostAsJsonAsync("/v1/chat/completions", openAiRequest, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var completion = await response.Content.ReadFromJsonAsync<OpenAiChatCompletionsResponse>(cancellationToken);
+        return completion?.Choices?.FirstOrDefault()?.Message?.Content?.Trim() ?? string.Empty;
+    }
+
+    private static string BuildPromptWithContext(
+        string prompt,
+        string? projectTag,
+        bool useKnowledge,
+        int maxKnowledgeSnippets)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(projectTag))
+        {
+            parts.Add($"ProjectTag: {projectTag}");
+        }
+
+        parts.Add($"UseKnowledge: {useKnowledge}");
+        parts.Add($"MaxKnowledgeSnippets: {Math.Max(1, maxKnowledgeSnippets)}");
+        parts.Add(prompt);
+        return string.Join(Environment.NewLine + Environment.NewLine, parts);
+    }
+
+    private static (string Plan, string Code, string Explanation) ParseCodeResponse(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return ("No plan returned.", "No code returned.", "No explanation returned.");
+        }
+
+        var plan = ExtractSection(content, "## Plan", "## Code");
+        var codeSection = ExtractSection(content, "## Code", "## Explanation");
+        var explanation = ExtractSection(content, "## Explanation", null);
+        var code = ExtractCodeBlock(codeSection);
+
+        return (
+            string.IsNullOrWhiteSpace(plan) ? "No plan returned." : plan,
+            string.IsNullOrWhiteSpace(code) ? content : code,
+            string.IsNullOrWhiteSpace(explanation) ? "No explanation returned." : explanation);
+    }
+
+    private static string ExtractSection(string text, string startMarker, string? endMarker)
+    {
+        var start = text.IndexOf(startMarker, StringComparison.OrdinalIgnoreCase);
+        if (start < 0)
+        {
+            return string.Empty;
+        }
+
+        start += startMarker.Length;
+        var end = endMarker is null
+            ? -1
+            : text.IndexOf(endMarker, start, StringComparison.OrdinalIgnoreCase);
+        var section = end >= 0 ? text[start..end] : text[start..];
+        return section.Trim();
+    }
+
+    private static string ExtractCodeBlock(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        var start = text.IndexOf("```", StringComparison.Ordinal);
+        if (start < 0)
+        {
+            return text.Trim();
+        }
+
+        var afterFence = text.IndexOf('\n', start);
+        if (afterFence < 0)
+        {
+            return text.Trim();
+        }
+
+        var end = text.IndexOf("```", afterFence + 1, StringComparison.Ordinal);
+        if (end < 0)
+        {
+            return text[(afterFence + 1)..].Trim();
+        }
+
+        return text[(afterFence + 1)..end].Trim();
     }
 }
