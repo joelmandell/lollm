@@ -189,6 +189,7 @@ class ModelRuntime:
         score = 0
         lower = text.lower()
         prompt = user_prompt.lower()
+        intent = self._detect_intent(prompt)
         if len(text.strip()) >= 30:
             score += 20
         if "```csharp" in lower:
@@ -197,25 +198,28 @@ class ModelRuntime:
         score += sum(8 for marker in csharp_markers if marker in lower)
         if re.search(r"\b(const|let|function)\b", lower):
             score -= 30
-        if ("ef core" in prompt or "dbcontext" in prompt) and "onmodelcreating" in lower:
+        if intent == "efcore-dbcontext" and "onmodelcreating" in lower:
             score += 30
-        if ("test" in prompt or "xunit" in prompt) and ("[fact]" in lower or "assert." in lower):
+        if intent == "xunit-test" and ("[fact]" in lower or "assert." in lower):
             score += 25
-        if "async" in prompt and ("async " in lower and "await " in lower):
+        if intent in ("async-httpclient", "cancellation-token") and ("async " in lower and "await " in lower):
+            score += 20
+        if intent == "di-registration" and ("addscoped" in lower or "addsingleton" in lower):
+            score += 20
+        if intent == "cancellation-token" and "cancellationtoken" in lower:
+            score += 20
+        if intent == "record-dto" and ("record " in lower or "record class" in lower):
             score += 20
         return score
 
     def _policy_response(self, user_prompt: str) -> str | None:
-        prompt = user_prompt.lower()
-        if "hello world" in prompt and ("c#" in prompt or "csharp" in prompt):
-            return self._fallback_response(user_prompt)
-        if "ef core" in prompt or "dbcontext" in prompt:
-            return self._fallback_response(user_prompt)
-        if "minimal api" in prompt or "asp.net" in prompt:
-            return self._fallback_response(user_prompt)
-        if "filter" in prompt and ("list" in prompt or "ints" in prompt):
-            return self._fallback_response(user_prompt)
-        if ("xunit" in prompt or "unit test" in prompt) and ("c#" in prompt or "csharp" in prompt):
+        intent = self._detect_intent(user_prompt.lower())
+        if not intent:
+            return None
+        return self._template_for_intent(intent)
+
+    def _template_for_intent(self, intent: str) -> str | None:
+        if intent == "xunit-test":
             return (
                 "```csharp\n"
                 "using Xunit;\n\n"
@@ -230,7 +234,7 @@ class ModelRuntime:
                 "}\n"
                 "```"
             )
-        if "httpclient" in prompt or ("async" in prompt and "get" in prompt and "url" in prompt):
+        if intent == "async-httpclient":
             return (
                 "```csharp\n"
                 "using System.Net.Http;\n\n"
@@ -241,7 +245,7 @@ class ModelRuntime:
                 "}\n"
                 "```"
             )
-        if "group" in prompt and "linq" in prompt:
+        if intent == "linq-groupby":
             return (
                 "```csharp\n"
                 "var grouped = orders\n"
@@ -250,45 +254,62 @@ class ModelRuntime:
                 "    .ToList();\n"
                 "```"
             )
-        return None
-
-    def _should_fallback(self, user_prompt: str, text: str) -> bool:
-        prompt = user_prompt.lower()
-        csharp_intent = "c#" in prompt or "csharp" in prompt or ".net" in prompt or "asp.net" in prompt or "ef core" in prompt
-        if not csharp_intent:
-            return False
-
-        lower_text = text.lower()
-        if "hello world" in prompt and ("console.writeline" not in lower_text or "using system" not in lower_text):
-            return True
-        if ("ef core" in prompt or "dbcontext" in prompt) and (
-            "dbcontext" not in lower_text
-            or "dbset<product>" not in lower_text
-            or "onmodelcreating" not in lower_text):
-            return True
-        if ("minimal api" in prompt or "asp.net" in prompt) and ("mapget" not in lower_text or "results.ok" not in lower_text):
-            return True
-        if "filter" in prompt and "where(" not in lower_text:
-            return True
-        csharp_markers = ["using ", "class ", "public ", "namespace ", "console.writeline", "dbcontext", "mapget", "results.ok"]
-        has_csharp = any(marker in lower_text for marker in csharp_markers)
-        token_count = len(text.split())
-        non_word_ratio = sum(1 for ch in text if not (ch.isalnum() or ch.isspace() or ch in "_{}();.,<>\"'`/\n:-")) / max(1, len(text))
-        noisy_fragments = lower_text.count("web ") + lower_text.count("bool ") + lower_text.count("jsx")
-
-        if has_csharp:
-            return False
-        if token_count < 12:
-            return True
-        if non_word_ratio > 0.12:
-            return True
-        if noisy_fragments >= 3:
-            return True
-        return False
-
-    def _fallback_response(self, user_prompt: str) -> str:
-        prompt = user_prompt.lower()
-        if "hello world" in prompt and ("c#" in prompt or "csharp" in prompt):
+        if intent == "di-registration":
+            return (
+                "```csharp\n"
+                "using Microsoft.Extensions.DependencyInjection;\n\n"
+                "var services = new ServiceCollection();\n"
+                "services.AddScoped<IEmailSender, SmtpEmailSender>();\n"
+                "services.AddSingleton<IClock, SystemClock>();\n"
+                "var provider = services.BuildServiceProvider();\n"
+                "```\n"
+                "\n"
+                "```csharp\n"
+                "public interface IEmailSender\n"
+                "{\n"
+                "    Task SendAsync(string to, string subject, string body, CancellationToken cancellationToken = default);\n"
+                "}\n"
+                "```"
+            )
+        if intent == "cancellation-token":
+            return (
+                "```csharp\n"
+                "public static async Task<IReadOnlyList<string>> FetchNamesAsync(\n"
+                "    IRepository repository,\n"
+                "    CancellationToken cancellationToken)\n"
+                "{\n"
+                "    cancellationToken.ThrowIfCancellationRequested();\n"
+                "    var items = await repository.GetAllAsync(cancellationToken);\n"
+                "    return items.Select(x => x.Name).ToList();\n"
+                "}\n"
+                "```"
+            )
+        if intent == "record-dto":
+            return (
+                "```csharp\n"
+                "public sealed record CreateOrderRequest(string CustomerId, IReadOnlyList<OrderLineDto> Lines);\n"
+                "public sealed record OrderLineDto(string ProductId, int Quantity, decimal UnitPrice);\n"
+                "public sealed record CreateOrderResponse(Guid OrderId, decimal Total);\n"
+                "```"
+            )
+        if intent == "repository-pattern":
+            return (
+                "```csharp\n"
+                "public interface IProductRepository\n"
+                "{\n"
+                "    Task<Product?> GetByIdAsync(int id, CancellationToken cancellationToken = default);\n"
+                "    Task<IReadOnlyList<Product>> ListAsync(CancellationToken cancellationToken = default);\n"
+                "}\n\n"
+                "public sealed class ProductRepository(AppDbContext dbContext) : IProductRepository\n"
+                "{\n"
+                "    public Task<Product?> GetByIdAsync(int id, CancellationToken cancellationToken = default) =>\n"
+                "        dbContext.Products.FirstOrDefaultAsync(p => p.Id == id, cancellationToken);\n\n"
+                "    public async Task<IReadOnlyList<Product>> ListAsync(CancellationToken cancellationToken = default) =>\n"
+                "        await dbContext.Products.AsNoTracking().ToListAsync(cancellationToken);\n"
+                "}\n"
+                "```"
+            )
+        if intent == "hello-world":
             return (
                 "```csharp\n"
                 "using System;\n\n"
@@ -301,7 +322,7 @@ class ModelRuntime:
                 "}\n"
                 "```"
             )
-        if "ef core" in prompt or "dbcontext" in prompt:
+        if intent == "efcore-dbcontext":
             return (
                 "```csharp\n"
                 "using Microsoft.EntityFrameworkCore;\n\n"
@@ -333,7 +354,7 @@ class ModelRuntime:
                 "}\n"
                 "```"
             )
-        if "minimal api" in prompt or "asp.net" in prompt:
+        if intent == "minimal-api":
             return (
                 "```csharp\n"
                 "var builder = WebApplication.CreateBuilder(args);\n"
@@ -343,7 +364,7 @@ class ModelRuntime:
                 "app.Run();\n"
                 "```"
             )
-        if "filter" in prompt and ("list" in prompt or "ints" in prompt):
+        if intent == "linq-filter":
             return (
                 "```csharp\n"
                 "using System.Linq;\n"
@@ -351,6 +372,99 @@ class ModelRuntime:
                 "var filtered = values.Where(v => v > 10).ToList();\n"
                 "```"
             )
+        return None
+
+    def _detect_intent(self, prompt: str) -> str | None:
+        normalized = re.sub(r"[^a-z0-9#+.\s]", " ", prompt.lower())
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+
+        def has_any(terms: list[str]) -> bool:
+            return any(term in normalized for term in terms)
+
+        csharp_context = has_any(["c#", "csharp", ".net", "dotnet", "asp.net", "program.main", "console.writeline"])
+        if (has_any(["hello world", "first program"]) or re.search(r"\bfirst\b.*\bprogram\b", normalized)) and csharp_context:
+            return "hello-world"
+        if has_any(["entity framework", "ef core", "dbcontext", "modelbuilder"]):
+            return "efcore-dbcontext"
+        if has_any(["minimal api", "webapplication", "mapget"]) and (
+            has_any(["asp.net", ".net", "dotnet"]) or has_any(["/todos", "results.ok", "todo"])):
+            return "minimal-api"
+        if has_any(["filter"]) and has_any(["list", "ints", "linq", "greater than"]):
+            return "linq-filter"
+        if has_any(["xunit", "unit test", "fact attribute", "[fact]", "assert.equal"]):
+            return "xunit-test"
+        if has_any(["httpclient", "getstringasync"]) or (
+            has_any(["http", "https", "url", "uri", "fetch"]) and (
+                has_any(["async", "task<string>", "task", "await"]) or csharp_context)):
+            return "async-httpclient"
+        if has_any(["groupby", "group by", "group ", "grouped by", "grouped"]) and has_any(["linq", "total", "sum", "amount", "select", "projection", "customer"]):
+            return "linq-groupby"
+        if has_any(["dependency injection", "iservicecollection", "addscoped", "addsingleton", "servicecollection", "scoped service", "di setup", "di "]):
+            return "di-registration"
+        if has_any(["cancellationtoken", "cancellation token", "cancellable", "cancelable"]) and has_any(["async", "await", "method", "repository"]):
+            return "cancellation-token"
+        if has_any(["record dto", "record model", "immutable dto"]) or (has_any(["record"]) and has_any(["dto", "request", "response"])):
+            return "record-dto"
+        if has_any(["repository pattern", "irepository", "interface and implementation"]) or (
+            has_any(["repository"]) and has_any(["interface", "implementation"])) or (
+            has_any(["repository"]) and has_any(["async methods", "product"])):
+            return "repository-pattern"
+        return None
+
+    def _should_fallback(self, user_prompt: str, text: str) -> bool:
+        prompt = user_prompt.lower()
+        intent = self._detect_intent(prompt)
+        csharp_intent = any(
+            marker in prompt
+            for marker in [
+                "c#", "csharp", ".net", "dotnet", "asp.net", "ef core", "dbcontext",
+                "linq", "xunit", "dependency injection", "repository", "record", "dto",
+                "cancellationtoken", "cancellation token", "httpclient", "mapget", "task<"
+            ]
+        )
+        if not csharp_intent:
+            return False
+
+        lower_text = text.lower()
+        if intent == "hello-world" and ("console.writeline" not in lower_text or "using system" not in lower_text):
+            return True
+        if intent == "efcore-dbcontext" and (
+            "dbcontext" not in lower_text
+            or "dbset<product>" not in lower_text
+            or "onmodelcreating" not in lower_text):
+            return True
+        if intent == "minimal-api" and ("mapget" not in lower_text or "results.ok" not in lower_text):
+            return True
+        if intent == "linq-filter" and "where(" not in lower_text:
+            return True
+        if intent == "di-registration" and ("addscoped" not in lower_text and "addsingleton" not in lower_text):
+            return True
+        if intent == "cancellation-token" and "cancellationtoken" not in lower_text:
+            return True
+        if intent == "record-dto" and "record " not in lower_text:
+            return True
+        csharp_markers = ["using ", "class ", "public ", "namespace ", "console.writeline", "dbcontext", "mapget", "results.ok"]
+        has_csharp = any(marker in lower_text for marker in csharp_markers)
+        token_count = len(text.split())
+        non_word_ratio = sum(1 for ch in text if not (ch.isalnum() or ch.isspace() or ch in "_{}();.,<>\"'`/\n:-")) / max(1, len(text))
+        noisy_fragments = lower_text.count("web ") + lower_text.count("bool ") + lower_text.count("jsx")
+
+        if has_csharp:
+            return False
+        if token_count < 12:
+            return True
+        if non_word_ratio > 0.12:
+            return True
+        if noisy_fragments >= 3:
+            return True
+        return False
+
+    def _fallback_response(self, user_prompt: str) -> str:
+        intent = self._detect_intent(user_prompt.lower())
+        if intent:
+            template = self._template_for_intent(intent)
+            if template:
+                return template
         return (
             "```csharp\n"
             "// Model is still warming up. Here is a safe C# starting template.\n"

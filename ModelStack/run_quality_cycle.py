@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--nproc-per-node", type=int, default=1)
     parser.add_argument("--skip-export", action="store_true")
     parser.add_argument("--skip-eval", action="store_true")
+    parser.add_argument("--fetch-github-quality", action="store_true")
     args = parser.parse_args()
 
     root = Path.cwd()
@@ -41,10 +42,19 @@ def main():
     if not args.skip_export:
         export_corpus(args.api_base)
 
+    if args.fetch_github_quality:
+        fetch_cmd = [sys.executable, "fetch_csharp_quality_corpus.py", "--max-repos", "6", "--max-files-per-repo", "1200"]
+        run_command(fetch_cmd, modelstack_dir)
+
+    extra_corpora = [profile.get("extra_corpus", "data/csharp_instruction_seed.txt")]
+    github_corpus = modelstack_dir / "data/github_csharp_quality_corpus.txt"
+    if github_corpus.exists():
+        extra_corpora.append("data/github_csharp_quality_corpus.txt")
+
     train_args = [
         "train_transformer.py",
         "--tokenizer", str(profile["tokenizer"]),
-        "--extra-corpus", str(profile.get("extra_corpus", "data/csharp_instruction_seed.txt")),
+        "--extra-corpus", ",".join(extra_corpora),
         "--extra-weight", str(profile.get("extra_weight", 4)),
         "--vocab-size", str(profile["vocab_size"]),
         "--seq-len", str(profile["seq_len"]),

@@ -14,3 +14,7 @@ ModelStack/*.pyc
 ModelStack/artifacts/
 ModelStack/data/corpus.txt
 ModelStack/data/corpus.jsonl
+ModelStack/data/github_csharp_quality_corpus.txt
+ModelStack/data/github_csharp_quality_manifest.json
+ModelStack/evals/coding_quality_cases_1000.jsonl
+ModelStack/evals/coding_quality_cases_10000000.jsonl

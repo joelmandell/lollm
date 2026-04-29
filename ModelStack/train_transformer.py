@@ -101,19 +101,21 @@ def run(args):
     tokenizer_name = args.tokenizer
     tokenizer = tiktoken.get_encoding(tokenizer_name)
     text = corpus_path.read_text(encoding="utf-8", errors="ignore")
-    if args.extra_corpus:
-        extra_path = Path(args.extra_corpus)
+    extra_specs = [item.strip() for item in (args.extra_corpus or "").replace(";", ",").split(",") if item.strip()]
+    for spec in extra_specs:
+        extra_path = Path(spec)
         if not extra_path.is_absolute():
             extra_path = Path.cwd() / extra_path
         if not extra_path.exists():
-            candidate = data_dir / Path(args.extra_corpus).name
+            candidate = data_dir / Path(spec).name
             if candidate.exists():
                 extra_path = candidate
-        if extra_path.exists():
-            extra_text = extra_path.read_text(encoding="utf-8", errors="ignore")
-            if extra_text.strip():
-                text = text + ("\n\n" + extra_text) * max(1, args.extra_weight)
-                log(rank, f"Loaded extra corpus from {extra_path} with weight {args.extra_weight}")
+        if not extra_path.exists():
+            continue
+        extra_text = extra_path.read_text(encoding="utf-8", errors="ignore")
+        if extra_text.strip():
+            text = text + ("\n\n" + extra_text) * max(1, args.extra_weight)
+            log(rank, f"Loaded extra corpus from {extra_path} with weight {args.extra_weight}")
     raw_token_ids = tokenizer.encode(text)
     if len(raw_token_ids) < args.seq_len + 2:
         raise ValueError("Corpus is too small for current sequence length.")

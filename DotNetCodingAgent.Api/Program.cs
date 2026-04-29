@@ -167,6 +167,109 @@ modelGroup.MapGet("/backend-status", async (
     return Results.Ok(response);
 });
 
+app.MapGet("/v1/models", () =>
+{
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    return Results.Ok(new
+    {
+        @object = "list",
+        data = new[]
+        {
+            new
+            {
+                id = "lollm-coder-001",
+                @object = "model",
+                created = now,
+                owned_by = "lollm"
+            }
+        }
+    });
+});
+
+app.MapPost("/v1/chat/completions", async (
+    OpenAiChatCompletionsRequest request,
+    AgentOrchestrator orchestrator,
+    CancellationToken cancellationToken) =>
+{
+    var systemMessage = request.Messages?
+        .LastOrDefault(m => string.Equals(m.Role, "system", StringComparison.OrdinalIgnoreCase))
+        ?.Content;
+    var userMessage = request.Messages?
+        .LastOrDefault(m => string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))
+        ?.Content;
+
+    if (string.IsNullOrWhiteSpace(userMessage))
+    {
+        return Results.BadRequest(new { error = new { message = "No user message provided." } });
+    }
+
+    var composedPrompt = string.IsNullOrWhiteSpace(systemMessage)
+        ? userMessage
+        : $"{systemMessage}\n\n{userMessage}";
+
+    var response = await orchestrator.ChatAsync(new ChatRequest(composedPrompt), cancellationToken);
+    var completionId = $"chatcmpl-{Guid.NewGuid():N}";
+    return Results.Ok(new
+    {
+        id = completionId,
+        @object = "chat.completion",
+        created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+        model = request.Model ?? "lollm-coder-001",
+        choices = new[]
+        {
+            new
+            {
+                index = 0,
+                message = new { role = "assistant", content = response.Answer },
+                finish_reason = "stop"
+            }
+        },
+        usage = new
+        {
+            prompt_tokens = 0,
+            completion_tokens = 0,
+            total_tokens = 0
+        }
+    });
+});
+
+app.MapPost("/v1/completions", async (
+    OpenAiCompletionsRequest request,
+    AgentOrchestrator orchestrator,
+    CancellationToken cancellationToken) =>
+{
+    var promptText = request.Prompt;
+    if (string.IsNullOrWhiteSpace(promptText))
+    {
+        return Results.BadRequest(new { error = new { message = "No prompt provided." } });
+    }
+
+    var response = await orchestrator.ChatAsync(new ChatRequest(promptText), cancellationToken);
+    var completionId = $"cmpl-{Guid.NewGuid():N}";
+    return Results.Ok(new
+    {
+        id = completionId,
+        @object = "text_completion",
+        created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+        model = request.Model ?? "lollm-coder-001",
+        choices = new[]
+        {
+            new
+            {
+                text = response.Answer,
+                index = 0,
+                finish_reason = "stop"
+            }
+        },
+        usage = new
+        {
+            prompt_tokens = 0,
+            completion_tokens = 0,
+            total_tokens = 0
+        }
+    });
+});
+
 app.Run();
 
 static async Task InitializeKnowledgeAsync(WebApplication app)
@@ -182,3 +285,12 @@ static async Task InitializeKnowledgeAsync(WebApplication app)
         await repository.AddSourceAsync(seedUrl, null, CancellationToken.None);
     }
 }
+
+public sealed record OpenAiChatMessage(string Role, string Content);
+public sealed record OpenAiChatCompletionsRequest(
+    string? Model,
+    IReadOnlyList<OpenAiChatMessage> Messages);
+
+public sealed record OpenAiCompletionsRequest(
+    string? Model,
+    string Prompt);
