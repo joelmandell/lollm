@@ -47,17 +47,17 @@ public sealed class FeedbackCorpusService(EvalFeedbackService evalFeedbackServic
             }
 
             var task = taskNode.GetString() ?? string.Empty;
-            var output = root.TryGetProperty("output", out var outputNode) && outputNode.ValueKind == JsonValueKind.String
-                ? outputNode.GetString() ?? string.Empty
-                : string.Empty;
+            var outputLength = root.TryGetProperty("output", out var outputNode) && outputNode.ValueKind == JsonValueKind.String
+                ? (outputNode.GetString() ?? string.Empty).Length
+                : 0;
             var errors = root.TryGetProperty("errors", out var errorNode) && errorNode.ValueKind == JsonValueKind.Array
                 ? string.Join("; ", errorNode.EnumerateArray()
                     .Take(3)
                     .Select(e => e.GetString())
                     .Where(e => !string.IsNullOrWhiteSpace(e)))
                 : "No diagnostics captured.";
-
-            selectedSamples.Add(BuildSample(task, output, errors));
+            var notes = $"VerificationPassed={verificationPassed}; OutputLength={outputLength}.";
+            selectedSamples.Add(BuildSample(task, errors, notes));
         }
 
         foreach (var line in evalLines)
@@ -104,12 +104,12 @@ public sealed class FeedbackCorpusService(EvalFeedbackService evalFeedbackServic
                     ? notesNode.GetString() ?? "No notes."
                     : "No notes.";
 
-                var target = $$"""
+                var diagnostics = $$"""
                     Score={{score}}
                     VerificationPassed={{verificationPassed}}
                     Notes={{notes}}
                     """;
-                selectedSamples.Add(BuildSample(prompt, target, notes));
+                selectedSamples.Add(BuildSample(prompt, diagnostics, "Evaluation case feedback."));
             }
         }
 
@@ -148,20 +148,266 @@ public sealed class FeedbackCorpusService(EvalFeedbackService evalFeedbackServic
         }
     }
 
-    private static string BuildSample(string prompt, string badOutput, string diagnostics)
+    private static string BuildSample(string prompt, string diagnostics, string guidance)
     {
+        var expectedOutput = BuildExpectedOutput(prompt);
         return $$"""
             [PROMPT]
             {{prompt}}
 
-            [BAD_OUTPUT_OR_NOTES]
-            {{badOutput}}
-
             [DIAGNOSTICS]
             {{diagnostics}}
 
+            [EXPECTED_OUTPUT]
+            {{expectedOutput}}
+
             [EXPECTED_BEHAVIOR]
             Return compile-ready, requirement-matching code with no hallucinated APIs.
+            Do not output placeholders, disclaimers, or low-confidence fallback text.
+            Keep the implementation concrete and technology-aligned with the prompt.
+
+            [GUIDANCE]
+            {{guidance}}
+            """;
+    }
+
+    private static string BuildExpectedOutput(string prompt)
+    {
+        var lower = prompt.ToLowerInvariant();
+        if (lower.Contains("minimal api", StringComparison.Ordinal) &&
+            lower.Contains("sqlite", StringComparison.Ordinal))
+        {
+            var dataSource = lower.Contains("hello.db", StringComparison.Ordinal)
+                ? "Data Source=hello.db"
+                : "Data Source=app.db";
+            return $$"""
+                ```csharp
+                using Microsoft.EntityFrameworkCore;
+
+                var builder = WebApplication.CreateBuilder(args);
+                builder.Services.AddDbContext<TodoDbContext>(options =>
+                    options.UseSqlite("{{dataSource}}"));
+
+                var app = builder.Build();
+                app.MapGet("/todos", async (TodoDbContext db) =>
+                    await db.Todos.AsNoTracking().ToListAsync());
+                app.MapPost("/todos", async (TodoItem todo, TodoDbContext db) =>
+                {
+                    db.Todos.Add(todo);
+                    await db.SaveChangesAsync();
+                    return Results.Created($"/todos/{todo.Id}", todo);
+                });
+                app.Run();
+
+                public sealed class TodoDbContext(DbContextOptions<TodoDbContext> options) : DbContext(options)
+                {
+                    public DbSet<TodoItem> Todos => Set<TodoItem>();
+                }
+
+                public sealed class TodoItem
+                {
+                    public int Id { get; set; }
+                    public string Title { get; set; } = string.Empty;
+                    public bool IsCompleted { get; set; }
+                }
+                ```
+                """;
+        }
+
+        if (lower.Contains("minimal api", StringComparison.Ordinal) &&
+            (lower.Contains("postgres", StringComparison.Ordinal) || lower.Contains("npgsql", StringComparison.Ordinal)))
+        {
+            return """
+                ```csharp
+                using Microsoft.EntityFrameworkCore;
+
+                var builder = WebApplication.CreateBuilder(args);
+                builder.Services.AddDbContext<TodoDbContext>(options =>
+                    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+                var app = builder.Build();
+                app.MapGet("/todos", async (TodoDbContext db) => await db.Todos.AsNoTracking().ToListAsync());
+                app.Run();
+
+                public sealed class TodoDbContext(DbContextOptions<TodoDbContext> options) : DbContext(options)
+                {
+                    public DbSet<TodoItem> Todos => Set<TodoItem>();
+                }
+
+                public sealed class TodoItem
+                {
+                    public int Id { get; set; }
+                    public string Title { get; set; } = string.Empty;
+                    public bool IsCompleted { get; set; }
+                }
+                ```
+                """;
+        }
+
+        if (lower.Contains("xunit", StringComparison.Ordinal) || lower.Contains("[fact]", StringComparison.Ordinal))
+        {
+            return """
+                ```csharp
+                using Xunit;
+
+                public sealed class SampleTests
+                {
+                    [Fact]
+                    public void Works()
+                    {
+                        var result = 2 + 2;
+                        Assert.Equal(4, result);
+                    }
+                }
+                ```
+                """;
+        }
+
+        if (lower.Contains("httpclient", StringComparison.Ordinal) ||
+            (lower.Contains("http", StringComparison.Ordinal) &&
+             (lower.Contains("retry", StringComparison.Ordinal) ||
+              lower.Contains("retri", StringComparison.Ordinal) ||
+              lower.Contains("backoff", StringComparison.Ordinal))))
+        {
+            return """
+                ```csharp
+                using System.Net.Http;
+                using Microsoft.Extensions.Logging;
+
+                public sealed class ResilientHttpClient(HttpClient httpClient, ILogger<ResilientHttpClient> logger)
+                {
+                    public async Task<string> GetWithRetryAsync(
+                        string url,
+                        int maxRetries = 3,
+                        CancellationToken cancellationToken = default)
+                    {
+                        var delay = TimeSpan.FromMilliseconds(200);
+                        for (var attempt = 1; ; attempt++)
+                        {
+                            try
+                            {
+                                using var response = await httpClient.GetAsync(url, cancellationToken);
+                                response.EnsureSuccessStatusCode();
+                                return await response.Content.ReadAsStringAsync(cancellationToken);
+                            }
+                            catch (Exception ex) when (attempt <= maxRetries && ex is HttpRequestException or TaskCanceledException)
+                            {
+                                logger.LogWarning(ex, "Transient HTTP failure on attempt {Attempt}", attempt);
+                                await Task.Delay(delay, cancellationToken);
+                                delay = TimeSpan.FromMilliseconds(delay.TotalMilliseconds * 2);
+                            }
+                        }
+                    }
+                }
+                ```
+                """;
+        }
+
+        if (lower.Contains("todo", StringComparison.Ordinal) &&
+            lower.Contains("console", StringComparison.Ordinal))
+        {
+            return """
+                ```csharp
+                using System;
+                using System.Collections.Generic;
+                using System.Linq;
+
+                var todos = new List<TodoItem>();
+                var nextId = 1;
+
+                while (true)
+                {
+                    Console.WriteLine("1) Add  2) List  3) Complete  4) Delete  0) Exit");
+                    var choice = Console.ReadLine();
+                    if (choice == "0") break;
+
+                    if (choice == "1")
+                    {
+                        Console.Write("Title: ");
+                        var title = Console.ReadLine()?.Trim();
+                        if (string.IsNullOrWhiteSpace(title))
+                        {
+                            Console.WriteLine("Title is required.");
+                            continue;
+                        }
+
+                        todos.Add(new TodoItem { Id = nextId++, Title = title, IsCompleted = false, CreatedAt = DateTime.UtcNow });
+                    }
+                    else if (choice == "2")
+                    {
+                        foreach (var todo in todos.OrderBy(t => t.Id))
+                        {
+                            Console.WriteLine($"{todo.Id}: {todo.Title} [{(todo.IsCompleted ? "x" : " ")}]");
+                        }
+                    }
+                    else if (choice == "3")
+                    {
+                        Console.Write("Id: ");
+                        if (int.TryParse(Console.ReadLine(), out var id))
+                        {
+                            var todo = todos.FirstOrDefault(t => t.Id == id);
+                            if (todo is not null) todo.IsCompleted = true;
+                        }
+                    }
+                    else if (choice == "4")
+                    {
+                        Console.Write("Id: ");
+                        if (int.TryParse(Console.ReadLine(), out var id))
+                        {
+                            todos.RemoveAll(t => t.Id == id);
+                        }
+                    }
+                }
+
+                public sealed class TodoItem
+                {
+                    public int Id { get; set; }
+                    public string Title { get; set; } = string.Empty;
+                    public bool IsCompleted { get; set; }
+                    public DateTime CreatedAt { get; set; }
+                }
+                ```
+                """;
+        }
+
+        if (lower.Contains("blazor", StringComparison.Ordinal) &&
+            (lower.Contains("javascript", StringComparison.Ordinal) || lower.Contains("js interop", StringComparison.Ordinal)))
+        {
+            return """
+                ```csharp
+                @inject IJSRuntime JS
+
+                <button @onclick="SaveAsync">Save</button>
+
+                @code {
+                    private async Task SaveAsync()
+                    {
+                        await JS.InvokeVoidAsync("todoStorage.save", "draft", "hello");
+                    }
+                }
+                ```
+
+                ```javascript
+                window.todoStorage = {
+                  save: (key, value) => localStorage.setItem(key, value),
+                  load: (key) => localStorage.getItem(key)
+                };
+                ```
+                """;
+        }
+
+        return """
+            ```csharp
+            using System;
+
+            public static class Solution
+            {
+                public static void Run()
+                {
+                    Console.WriteLine("Implement according to prompt requirements.");
+                }
+            }
+            ```
             """;
     }
 }

@@ -6,6 +6,8 @@ namespace DotNetCodingAgent.Api.Services;
 
 public sealed class ImprovementTrainingService(
     ImprovementCycleService improvementCycleService,
+    FeedbackCorpusService feedbackCorpusService,
+    EvalFeedbackService evalFeedbackService,
     IHostEnvironment hostEnvironment)
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -16,19 +18,42 @@ public sealed class ImprovementTrainingService(
         RunImprovementTrainingRequest request,
         CancellationToken cancellationToken)
     {
-        var cycle = await improvementCycleService.RunAsync(
-            new RunImprovementCycleRequest(
-                Prompts: request.Prompts,
-                UseKnowledge: request.UseKnowledge,
-                MaxKnowledgeSnippets: request.MaxKnowledgeSnippets,
-                FeedbackCorpusMaxItems: request.FeedbackCorpusMaxItems,
-                FeedbackLowScoreThreshold: request.FeedbackLowScoreThreshold,
-                IncludePassingSamplesInCorpus: request.IncludePassingSamplesInCorpus),
-            cancellationToken);
+        RunImprovementCycleResponse cycle;
+        if (request.SkipEval)
+        {
+            var corpus = await feedbackCorpusService.BuildAsync(
+                new BuildFeedbackCorpusRequest(
+                    MaxItems: request.FeedbackCorpusMaxItems,
+                    LowScoreThreshold: request.FeedbackLowScoreThreshold,
+                    IncludePassingSamples: request.IncludePassingSamplesInCorpus,
+                    IncludeJsonl: true,
+                    IncludeText: true),
+                cancellationToken);
+            var feedbackStatus = await evalFeedbackService.GetStatusAsync(cancellationToken);
+            cycle = new RunImprovementCycleResponse(
+                Success: corpus.Success,
+                Evaluation: new CodingEvalResponse(0, 0, []),
+                FeedbackCorpus: corpus,
+                FeedbackStatus: feedbackStatus,
+                Message: $"Pre-training eval skipped. Feedback corpus refreshed with {corpus.SelectedItems} samples.");
+        }
+        else
+        {
+            cycle = await improvementCycleService.RunAsync(
+                new RunImprovementCycleRequest(
+                    Prompts: request.Prompts,
+                    UseKnowledge: request.UseKnowledge,
+                    MaxKnowledgeSnippets: request.MaxKnowledgeSnippets,
+                    FeedbackCorpusMaxItems: request.FeedbackCorpusMaxItems,
+                    FeedbackLowScoreThreshold: request.FeedbackLowScoreThreshold,
+                    IncludePassingSamplesInCorpus: request.IncludePassingSamplesInCorpus),
+                cancellationToken);
+        }
 
         await _gate.WaitAsync(cancellationToken);
         try
         {
+            ReconcileProcessStateUnsafe();
             if (_process is { HasExited: false })
             {
                 throw new InvalidOperationException("Improvement training is already running.");
@@ -87,6 +112,7 @@ public sealed class ImprovementTrainingService(
 
     public ImprovementTrainingStatusResponse GetStatus()
     {
+        ReconcileProcessStateUnsafe();
         return new ImprovementTrainingStatusResponse(
             IsRunning: _state.IsRunning,
             ProcessId: _state.ProcessId,
@@ -102,6 +128,7 @@ public sealed class ImprovementTrainingService(
         await _gate.WaitAsync(cancellationToken);
         try
         {
+            ReconcileProcessStateUnsafe();
             if (_process is null || _process.HasExited)
             {
                 return new ImprovementTrainingStopResponse(
@@ -131,6 +158,7 @@ public sealed class ImprovementTrainingService(
                 ExitCode = _process.HasExited ? _process.ExitCode : null,
                 Message = "Improvement training stopped by request."
             };
+            _process = null;
 
             return new ImprovementTrainingStopResponse(
                 Success: true,
@@ -223,11 +251,51 @@ public sealed class ImprovementTrainingService(
                     ? "Improvement training stopped by request."
                     : process.ExitCode == 0 ? "Improvement training completed." : "Improvement training failed."
             };
+            if (ReferenceEquals(_process, process))
+            {
+                _process = null;
+            }
         }
         finally
         {
             _gate.Release();
         }
+    }
+
+    private void ReconcileProcessStateUnsafe()
+    {
+        if (_process is null)
+        {
+            return;
+        }
+
+        if (!_process.HasExited)
+        {
+            if (!_state.IsRunning || _state.ProcessId != _process.Id)
+            {
+                _state = _state with
+                {
+                    IsRunning = true,
+                    ProcessId = _process.Id,
+                    ExitCode = null,
+                    CompletedUtc = null,
+                    Message = "Improvement training started."
+                };
+            }
+
+            return;
+        }
+
+        _state = _state with
+        {
+            IsRunning = false,
+            CompletedUtc = _state.CompletedUtc ?? DateTimeOffset.UtcNow,
+            ExitCode = _process.ExitCode,
+            Message = _state.StopRequested
+                ? "Improvement training stopped by request."
+                : _process.ExitCode == 0 ? "Improvement training completed." : "Improvement training failed."
+        };
+        _process = null;
     }
 
     private static string BuildArguments(

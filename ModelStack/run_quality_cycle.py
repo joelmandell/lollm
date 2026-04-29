@@ -23,45 +23,47 @@ def export_corpus(api_base: str):
     print("Export corpus:", response.json())
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Run iterative train+eval cycle for model quality.")
-    parser.add_argument("--api-base", default="http://localhost:5101")
-    parser.add_argument("--profile", default="ModelStack/configs/scaled_train_profile.json")
-    parser.add_argument("--modelstack-dir", default="ModelStack")
-    parser.add_argument("--torchrun", action="store_true")
-    parser.add_argument("--nproc-per-node", type=int, default=1)
-    parser.add_argument("--skip-export", action="store_true")
-    parser.add_argument("--skip-eval", action="store_true")
-    parser.add_argument("--fetch-github-quality", action="store_true")
-    parser.add_argument("--feedback-corpus", default=None, help="Optional extra corpus path relative to modelstack-dir.")
-    args = parser.parse_args()
+def build_weighted_corpus_spec(modelstack_dir: Path, feedback_corpus_arg: str | None, profile: dict) -> str:
+    defaults = {
+        "data/csharp_instruction_seed.txt": 8,
+        "data/corpus_dotnet_focus.txt": 8,
+        "data/prompt_interpretation_focus.txt": 8,
+        "data/dotnet_csharp_sft_pairs.txt": 14,
+        "data/github_csharp_quality_corpus.txt": 3,
+        "data/feedback_corpus.txt": 12,
+    }
+    configured = profile.get("corpus_weights", {})
+    weights = {**defaults, **configured}
 
-    root = Path.cwd()
-    modelstack_dir = root / args.modelstack_dir
-    profile = json.loads((root / args.profile).read_text(encoding="utf-8"))
+    entries: list[str] = []
+    seen: set[str] = set()
 
-    if not args.skip_export:
-        export_corpus(args.api_base)
+    def add_if_exists(relative_path: str):
+        if relative_path in seen:
+            return
+        absolute = modelstack_dir / relative_path
+        if absolute.exists():
+            seen.add(relative_path)
+            weight = max(1, int(weights.get(relative_path, profile.get("extra_weight", 4))))
+            entries.append(f"{relative_path}:{weight}")
 
-    if args.fetch_github_quality:
-        fetch_cmd = [sys.executable, "fetch_csharp_quality_corpus.py", "--max-repos", "6", "--max-files-per-repo", "1200"]
-        run_command(fetch_cmd, modelstack_dir)
+    add_if_exists(profile.get("extra_corpus", "data/csharp_instruction_seed.txt"))
+    add_if_exists("data/corpus_dotnet_focus.txt")
+    add_if_exists("data/prompt_interpretation_focus.txt")
+    add_if_exists("data/dotnet_csharp_sft_pairs.txt")
+    add_if_exists("data/github_csharp_quality_corpus.txt")
+    if feedback_corpus_arg:
+        add_if_exists(feedback_corpus_arg)
 
-    extra_corpora = [profile.get("extra_corpus", "data/csharp_instruction_seed.txt")]
-    github_corpus = modelstack_dir / "data/github_csharp_quality_corpus.txt"
-    if github_corpus.exists():
-        extra_corpora.append("data/github_csharp_quality_corpus.txt")
-    if args.feedback_corpus:
-        feedback_corpus = modelstack_dir / args.feedback_corpus
-        if feedback_corpus.exists():
-            extra_corpora.append(args.feedback_corpus)
+    return ",".join(entries)
 
+
+def build_train_args(profile: dict, weighted_spec: str) -> list[str]:
     train_args = [
         "train_transformer.py",
         "--data-dir", "data",
         "--tokenizer", str(profile["tokenizer"]),
-        "--extra-corpus", ",".join(extra_corpora),
-        "--extra-weight", str(profile.get("extra_weight", 4)),
+        "--extra-corpus-spec", weighted_spec,
         "--vocab-size", str(profile["vocab_size"]),
         "--seq-len", str(profile["seq_len"]),
         "--micro-batch-size", str(profile["micro_batch_size"]),
@@ -76,17 +78,105 @@ def main():
         "--eval-every", str(profile["eval_every"]),
         "--eval-steps", str(profile["eval_steps"]),
         "--save-every", str(profile["save_every"]),
+        "--clean-corpus",
     ]
+    if "high_signal_weight_threshold" in profile:
+        train_args.extend(["--high-signal-weight-threshold", str(profile["high_signal_weight_threshold"])])
+    if "priority_token_ratio" in profile:
+        train_args.extend(["--priority-token-ratio", str(profile["priority_token_ratio"])])
     if profile.get("amp", False):
         train_args.append("--amp")
     if profile.get("resume", False):
         train_args.append("--resume")
+    return train_args
 
-    if args.torchrun:
-        cmd = ["torchrun", "--nproc_per_node", str(args.nproc_per_node)] + train_args
-    else:
-        cmd = [sys.executable] + train_args
-    run_command(cmd, modelstack_dir)
+
+def read_available_memory_gb() -> float | None:
+    try:
+        meminfo = Path("/proc/meminfo").read_text(encoding="utf-8")
+        for line in meminfo.splitlines():
+            if line.startswith("MemAvailable:"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    kib = float(parts[1])
+                    return kib / (1024 * 1024)
+    except Exception:
+        return None
+    return None
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run iterative train+eval cycle for model quality.")
+    parser.add_argument("--api-base", default="http://localhost:5101")
+    parser.add_argument("--profile", default="ModelStack/configs/scaled_train_profile.json")
+    parser.add_argument("--modelstack-dir", default="ModelStack")
+    parser.add_argument("--torchrun", action="store_true")
+    parser.add_argument("--nproc-per-node", type=int, default=1)
+    parser.add_argument("--skip-export", action="store_true")
+    parser.add_argument("--skip-eval", action="store_true")
+    parser.add_argument("--fetch-github-quality", action="store_true")
+    parser.add_argument("--feedback-corpus", default=None, help="Optional extra corpus path relative to modelstack-dir.")
+    parser.add_argument("--fallback-profile", default="ModelStack/configs/stable_train_profile.json")
+    parser.add_argument("--emergency-profile", default="ModelStack/configs/ultra_stable_train_profile.json")
+    args = parser.parse_args()
+
+    root = Path.cwd()
+    modelstack_dir = root / args.modelstack_dir
+    profile = json.loads((root / args.profile).read_text(encoding="utf-8"))
+    fallback_profile_path = root / args.fallback_profile
+    fallback_profile = json.loads(fallback_profile_path.read_text(encoding="utf-8")) if fallback_profile_path.exists() else None
+    emergency_profile_path = root / args.emergency_profile
+    emergency_profile = json.loads(emergency_profile_path.read_text(encoding="utf-8")) if emergency_profile_path.exists() else None
+
+    available_memory_gb = read_available_memory_gb()
+    min_required_memory_gb = profile.get("min_available_memory_gb")
+    if (
+        fallback_profile is not None
+        and available_memory_gb is not None
+        and isinstance(min_required_memory_gb, (int, float))
+        and available_memory_gb < float(min_required_memory_gb)
+    ):
+        print(
+            f"Available memory {available_memory_gb:.2f}GB is below profile minimum "
+            f"{float(min_required_memory_gb):.2f}GB. Using fallback profile.")
+        profile = fallback_profile
+
+    if not args.skip_export:
+        export_corpus(args.api_base)
+
+    if args.fetch_github_quality:
+        fetch_cmd = [sys.executable, "fetch_csharp_quality_corpus.py", "--max-repos", "6", "--max-files-per-repo", "1200"]
+        run_command(fetch_cmd, modelstack_dir)
+
+    weighted_spec = build_weighted_corpus_spec(modelstack_dir, args.feedback_corpus, profile)
+    profiles_to_try: list[dict] = [profile]
+    for candidate in [fallback_profile, emergency_profile]:
+        if candidate is None:
+            continue
+        if all(existing.get("profile") != candidate.get("profile") for existing in profiles_to_try):
+            profiles_to_try.append(candidate)
+
+    completed = False
+    for index, active_profile in enumerate(profiles_to_try):
+        train_args = build_train_args(active_profile, weighted_spec)
+        if args.torchrun and index == 0:
+            cmd = ["torchrun", "--nproc_per_node", str(args.nproc_per_node)] + train_args
+        else:
+            cmd = [sys.executable] + train_args
+        try:
+            run_command(cmd, modelstack_dir)
+            completed = True
+            break
+        except subprocess.CalledProcessError as exc:
+            if exc.returncode not in (-9, 137) or index == len(profiles_to_try) - 1:
+                raise
+            next_profile = profiles_to_try[index + 1].get("profile", "fallback")
+            print(
+                f"Training profile '{active_profile.get('profile', 'unknown')}' terminated "
+                f"(likely OOM). Retrying with '{next_profile}'.")
+
+    if not completed:
+        raise RuntimeError("Training did not complete with any configured profile.")
 
     if not args.skip_eval:
         server = subprocess.Popen(

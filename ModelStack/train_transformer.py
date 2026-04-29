@@ -3,6 +3,7 @@ import json
 import math
 import os
 import random
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -74,6 +75,121 @@ def log(rank: int, message: str):
         print(message, flush=True)
 
 
+def parse_extra_corpus_specs(
+    extra_corpus: str,
+    extra_weight: int,
+    extra_corpus_spec: str) -> list[tuple[str, int]]:
+    specs: list[tuple[str, int]] = []
+    default_weight = max(1, extra_weight)
+    normalized_default = "data/csharp_instruction_seed.txt"
+    include_plain_extra = True
+    if extra_corpus_spec.strip() and extra_corpus.strip() == normalized_default:
+        include_plain_extra = False
+
+    if include_plain_extra:
+        for item in [part.strip() for part in extra_corpus.replace(";", ",").split(",") if part.strip()]:
+            specs.append((item, default_weight))
+
+    for item in [part.strip() for part in extra_corpus_spec.replace(";", ",").split(",") if part.strip()]:
+        path = item
+        weight = default_weight
+        if ":" in item:
+            candidate_path, candidate_weight = item.rsplit(":", 1)
+            if candidate_path.strip():
+                path = candidate_path.strip()
+            try:
+                parsed = int(candidate_weight.strip())
+                weight = max(1, parsed)
+            except ValueError:
+                weight = default_weight
+        specs.append((path, weight))
+
+    return specs
+
+
+def _normalize_line(line: str) -> str:
+    line = line.strip()
+    if not line:
+        return ""
+    line = re.sub(r"\{\{domxref\([^)]+\)\}\}", "", line, flags=re.IGNORECASE)
+    line = re.sub(r"\s+", " ", line)
+    return line.strip()
+
+
+def clean_training_text(text: str) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    noisy_exact = {
+        "skip to main content",
+        "this browser is no longer supported.",
+        "theme",
+        "light",
+        "dark",
+        "high contrast",
+        "additional resources",
+        "was this page helpful?",
+        "feedback",
+    }
+    cleaned_lines: list[str] = []
+    duplicate_guard: Counter[str] = Counter()
+
+    for raw_line in text.split("\n"):
+        line = _normalize_line(raw_line)
+        if not line:
+            cleaned_lines.append("")
+            continue
+
+        lower = line.lower()
+        if lower in noisy_exact:
+            continue
+        if lower.startswith("table of contents"):
+            continue
+        if line.startswith("|") and "---" in line:
+            continue
+        if len(line) < 3:
+            continue
+        if sum(ch.isalpha() for ch in line) < 2 and not any(ch in "{}();[]<>" for ch in line):
+            continue
+
+        if duplicate_guard[line] >= 4:
+            continue
+        duplicate_guard[line] += 1
+        cleaned_lines.append(line)
+
+    compact = "\n".join(cleaned_lines)
+    compact = re.sub(r"\n{3,}", "\n\n", compact)
+    return compact.strip()
+
+
+def build_compact_vocabulary(
+    raw_token_ids: list[int],
+    high_signal_token_ids: list[int],
+    fallback_token_id: int,
+    max_vocab: int,
+    priority_token_ratio: float) -> list[int]:
+    id_to_token = [fallback_token_id]
+    priority_slots = max(0, min(max_vocab - 1, int((max_vocab - 1) * priority_token_ratio)))
+
+    seen = {fallback_token_id}
+    if priority_slots > 0 and high_signal_token_ids:
+        for token_id, _ in Counter(high_signal_token_ids).most_common(priority_slots):
+            if token_id in seen:
+                continue
+            id_to_token.append(token_id)
+            seen.add(token_id)
+            if len(id_to_token) >= max_vocab:
+                return id_to_token
+
+    for token_id, _ in Counter(raw_token_ids).most_common(max_vocab - 1):
+        if token_id in seen:
+            continue
+        id_to_token.append(token_id)
+        seen.add(token_id)
+        if len(id_to_token) >= max_vocab:
+            break
+
+    return id_to_token
+
+
 def evaluate(model: nn.Module, tokens: torch.Tensor, seq_len: int, batch_size: int, device: torch.device, steps: int = 10) -> float:
     model.eval()
     losses = []
@@ -101,8 +217,12 @@ def run(args):
     tokenizer_name = args.tokenizer
     tokenizer = tiktoken.get_encoding(tokenizer_name)
     text = corpus_path.read_text(encoding="utf-8", errors="ignore")
-    extra_specs = [item.strip() for item in (args.extra_corpus or "").replace(";", ",").split(",") if item.strip()]
-    for spec in extra_specs:
+    high_signal_texts: list[str] = []
+    extra_specs = parse_extra_corpus_specs(
+        args.extra_corpus or "",
+        args.extra_weight,
+        args.extra_corpus_spec or "")
+    for spec, weight in extra_specs:
         extra_path = Path(spec)
         if not extra_path.is_absolute():
             extra_path = Path.cwd() / extra_path
@@ -114,19 +234,35 @@ def run(args):
             continue
         extra_text = extra_path.read_text(encoding="utf-8", errors="ignore")
         if extra_text.strip():
-            text = text + ("\n\n" + extra_text) * max(1, args.extra_weight)
-            log(rank, f"Loaded extra corpus from {extra_path} with weight {args.extra_weight}")
+            repeats = max(1, weight)
+            text = text + ("\n\n" + extra_text) * repeats
+            if weight >= args.high_signal_weight_threshold:
+                high_signal_texts.extend([extra_text] * repeats)
+            log(rank, f"Loaded extra corpus from {extra_path} with weight {weight}")
+    if args.clean_corpus:
+        original_size = len(text)
+        text = clean_training_text(text)
+        log(rank, f"Applied corpus cleaning: {original_size} -> {len(text)} chars")
+        if high_signal_texts:
+            high_signal_texts = [clean_training_text(sample) for sample in high_signal_texts if sample.strip()]
+
     raw_token_ids = tokenizer.encode(text)
     if len(raw_token_ids) < args.seq_len + 2:
         raise ValueError("Corpus is too small for current sequence length.")
 
     fallback_token_id = tokenizer.encode(" ")[0]
     max_vocab = max(2, args.vocab_size)
-    most_common = Counter(raw_token_ids).most_common(max_vocab - 1)
-    id_to_token = [fallback_token_id]
-    for token_id, _ in most_common:
-        if token_id != fallback_token_id:
-            id_to_token.append(token_id)
+    high_signal_token_ids: list[int] = []
+    if high_signal_texts:
+        high_signal_token_ids = tokenizer.encode("\n\n".join(high_signal_texts))
+        log(rank, f"High-signal token pool size: {len(high_signal_token_ids)}")
+
+    id_to_token = build_compact_vocabulary(
+        raw_token_ids=raw_token_ids,
+        high_signal_token_ids=high_signal_token_ids,
+        fallback_token_id=fallback_token_id,
+        max_vocab=max_vocab,
+        priority_token_ratio=args.priority_token_ratio)
 
     token_to_id = {token_id: idx for idx, token_id in enumerate(id_to_token)}
     compact_token_ids = [token_to_id.get(token_id, 0) for token_id in raw_token_ids]
@@ -292,6 +428,9 @@ if __name__ == "__main__":
     parser.add_argument("--tokenizer", default="o200k_base")
     parser.add_argument("--extra-corpus", default="data/csharp_instruction_seed.txt")
     parser.add_argument("--extra-weight", type=int, default=4)
+    parser.add_argument("--extra-corpus-spec", default="")
+    parser.add_argument("--high-signal-weight-threshold", type=int, default=8)
+    parser.add_argument("--priority-token-ratio", type=float, default=0.35)
     parser.add_argument("--vocab-size", type=int, default=32000)
     parser.add_argument("--seq-len", type=int, default=512)
     parser.add_argument("--micro-batch-size", type=int, default=8)
@@ -309,4 +448,5 @@ if __name__ == "__main__":
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument("--clean-corpus", action="store_true")
     run(parser.parse_args())

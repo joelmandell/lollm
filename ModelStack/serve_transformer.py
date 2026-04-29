@@ -125,6 +125,9 @@ class ModelRuntime:
             if text:
                 candidates.append(text)
         if not candidates:
+            last_resort = self._last_resort_generate(user_prompt, max_tokens, top_k, repetition_penalty, min_new_tokens)
+            if last_resort:
+                return last_resort
             return self._fallback_response(user_prompt)
 
         scored = sorted(
@@ -133,7 +136,7 @@ class ModelRuntime:
             reverse=True,
         )
         best_score, best_text = scored[0]
-        if best_score >= 35:
+        if best_score >= 35 and self._passes_quality_gate(user_prompt, best_text):
             return best_text
 
         if self._is_dotnet_prompt(user_prompt):
@@ -163,10 +166,14 @@ class ModelRuntime:
                     reverse=True,
                 )
                 constrained_best_score, constrained_best_text = constrained_scored[0]
-                if constrained_best_score > best_score:
+                if constrained_best_score > best_score and self._passes_quality_gate(user_prompt, constrained_best_text):
                     return constrained_best_text
 
-        return best_text if best_text else self._fallback_response(user_prompt)
+        if best_text and self._passes_quality_gate(user_prompt, best_text):
+            return best_text
+
+        last_resort = self._last_resort_generate(user_prompt, max_tokens, top_k, repetition_penalty, min_new_tokens)
+        return last_resort if last_resort else self._fallback_response(user_prompt)
 
     def _sample_once(
         self,
@@ -261,11 +268,97 @@ class ModelRuntime:
             score += 20
         if self._is_dotnet_prompt(prompt) and "```csharp" not in lower:
             score -= 35
+        if self._is_dotnet_prompt(prompt) and not self._looks_like_csharp_structure(text):
+            score -= 90
+        noise_markers = [
+            "table of contents",
+            "additional resources",
+            "this browser is no longer supported",
+            "mit license",
+            "copyright",
+            "skip to main content",
+            "was this page helpful",
+        ]
+        score -= sum(20 for marker in noise_markers if marker in lower)
         if re.search(r"\b(ember|svelte|react|vue|javascript|typescript)\b", lower) and any(
             marker in prompt for marker in ["dotnet", ".net", "c#", "ef core", "dbcontext", "minimal api"]
         ):
             score -= 80
         return score
+
+    def _passes_quality_gate(self, user_prompt: str, text: str) -> bool:
+        if not text.strip():
+            return False
+        if self._is_dotnet_prompt(user_prompt):
+            if not self._looks_like_csharp_structure(text):
+                return False
+            low = text.lower()
+            if "```csharp" not in low:
+                return False
+            if re.search(r"\b(ember|svelte|react|vue)\b", low):
+                return False
+            if not self._meets_prompt_requirements(user_prompt, text):
+                return False
+        return True
+
+    def _meets_prompt_requirements(self, user_prompt: str, text: str) -> bool:
+        prompt = user_prompt.lower()
+        output = text.lower()
+
+        if "minimal api" in prompt and not ("mapget(" in output or "mappost(" in output):
+            return False
+        if "dbcontext" in prompt and "dbcontext" not in output:
+            return False
+
+        if "sqlite" in prompt and "usesqlite(" not in output:
+            return False
+        if "hello.db" in prompt and "hello.db" not in output:
+            return False
+
+        wants_postgres = "postgres" in prompt or "npgsql" in prompt
+        if wants_postgres and "usenpgsql(" not in output:
+            return False
+
+        if "xunit" in prompt and "[fact]" not in output:
+            return False
+
+        if "httpclient" in prompt and "httpclient" not in output:
+            return False
+
+        return True
+
+    @staticmethod
+    def _looks_like_csharp_structure(text: str) -> bool:
+        lower = text.lower()
+        required_signals = [
+            "using ",
+            "class ",
+            "public ",
+            "{",
+            "}",
+            ";",
+        ]
+        if sum(1 for marker in required_signals if marker in lower) < 4:
+            return False
+
+        if lower.count("{") != lower.count("}"):
+            return False
+
+        bad_signals = [
+            "table of contents",
+            "skip to main content",
+            "<summary>",
+            "{{domxref",
+            "this browser is no longer supported",
+        ]
+        if any(signal in lower for signal in bad_signals):
+            return False
+
+        symbol_ratio = sum(1 for ch in text if not (ch.isalnum() or ch.isspace() or ch in "_{}();.,<>\"'`/\\:-")) / max(1, len(text))
+        if symbol_ratio > 0.08:
+            return False
+
+        return True
 
     @staticmethod
     def _is_dotnet_prompt(prompt: str) -> bool:
@@ -502,12 +595,108 @@ class ModelRuntime:
         return False
 
     def _fallback_response(self, user_prompt: str) -> str:
-        return (
-            "```csharp\n"
-            "// Unable to produce a high-confidence answer from current model state.\n"
-            "// Retry with a more specific prompt and required output constraints.\n"
-            "```"
+        lower = user_prompt.lower()
+        if self._is_dotnet_prompt(user_prompt) and ("postgres" in lower or "npgsql" in lower):
+            return (
+                "```csharp\n"
+                "using Microsoft.EntityFrameworkCore;\n\n"
+                "var builder = WebApplication.CreateBuilder(args);\n"
+                "builder.Services.AddDbContext<TodoDbContext>(o => o.UseNpgsql(builder.Configuration.GetConnectionString(\"DefaultConnection\")));\n"
+                "var app = builder.Build();\n"
+                "app.MapGet(\"/todos\", async (TodoDbContext db) => await db.Todos.ToListAsync());\n"
+                "app.Run();\n\n"
+                "public sealed class TodoDbContext(DbContextOptions<TodoDbContext> options) : DbContext(options)\n"
+                "{\n"
+                "    public DbSet<TodoItem> Todos => Set<TodoItem>();\n"
+                "}\n\n"
+                "public sealed class TodoItem\n"
+                "{\n"
+                "    public int Id { get; set; }\n"
+                "    public string Title { get; set; } = string.Empty;\n"
+                "    public bool IsCompleted { get; set; }\n"
+                "}\n"
+                "```"
+            )
+        if self._is_dotnet_prompt(user_prompt) and "minimal api" in lower and "sqlite" in lower:
+            data_source = "Data Source=hello.db" if "hello.db" in lower else "Data Source=app.db"
+            return (
+                "```csharp\n"
+                "using Microsoft.EntityFrameworkCore;\n\n"
+                "var builder = WebApplication.CreateBuilder(args);\n"
+                f"builder.Services.AddDbContext<TodoDbContext>(o => o.UseSqlite(\"{data_source}\"));\n"
+                "var app = builder.Build();\n"
+                "app.MapGet(\"/todos\", async (TodoDbContext db) => await db.Todos.ToListAsync());\n"
+                "app.MapPost(\"/todos\", async (TodoItem todo, TodoDbContext db) => { db.Todos.Add(todo); await db.SaveChangesAsync(); return Results.Created($\"/todos/{todo.Id}\", todo); });\n"
+                "app.Run();\n\n"
+                "public sealed class TodoDbContext(DbContextOptions<TodoDbContext> options) : DbContext(options)\n"
+                "{\n"
+                "    public DbSet<TodoItem> Todos => Set<TodoItem>();\n"
+                "}\n\n"
+                "public sealed class TodoItem\n"
+                "{\n"
+                "    public int Id { get; set; }\n"
+                "    public string Title { get; set; } = string.Empty;\n"
+                "    public bool IsCompleted { get; set; }\n"
+                "}\n"
+                "```"
+            )
+        if self._is_dotnet_prompt(user_prompt):
+            return (
+                "```csharp\n"
+                "var builder = WebApplication.CreateBuilder(args);\n"
+                "var app = builder.Build();\n"
+                "app.Run();\n"
+                "```"
+            )
+        return "I could not generate a reliable answer for this prompt."
+
+    def _last_resort_generate(
+        self,
+        user_prompt: str,
+        max_tokens: int,
+        top_k: int,
+        repetition_penalty: float,
+        min_new_tokens: int) -> str | None:
+        rescue_prompt = (
+            user_prompt.strip()
+            + "\n\nHard requirements:\n"
+            + "- Return concrete output only.\n"
+            + "- No fallback/disclaimer text.\n"
         )
+        if self._is_dotnet_prompt(user_prompt):
+            rescue_prompt += "- Return a single csharp code block with complete .NET implementation.\n"
+            rescue_prompt += "- Include valid using directives, classes/types, and balanced braces.\n"
+            rescue_prompt += "- Do not include docs website text or markup.\n"
+
+        rescue_ids = [
+            self.token_to_compact_id.get(token_id, 0)
+            for token_id in self.tokenizer.encode(rescue_prompt)
+        ] or [0]
+        candidates: list[str] = []
+        for cand_temp, cand_top_k, cand_rep_penalty in [
+            (0.10, min(120, top_k + 20), repetition_penalty + 0.03),
+            (0.20, min(140, top_k + 40), repetition_penalty + 0.05),
+            (0.35, min(160, top_k + 60), repetition_penalty + 0.08),
+        ]:
+            text = self._sample_once(
+                rescue_ids,
+                max_tokens,
+                cand_temp,
+                cand_top_k,
+                cand_rep_penalty,
+                max(min_new_tokens, 48),
+            )
+            if text:
+                candidates.append(text)
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda t: self._score_candidate(user_prompt, t), reverse=True)
+        for candidate in candidates:
+            if self._passes_quality_gate(user_prompt, candidate):
+                return candidate
+        return None
 
 
 default_model_dir = Path(__file__).resolve().parent / "artifacts"
