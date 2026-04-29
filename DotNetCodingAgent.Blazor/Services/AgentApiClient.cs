@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Text.Json;
 using DotNetCodingAgent.Contracts;
 using Microsoft.AspNetCore.Components.Forms;
 
@@ -14,17 +15,32 @@ public sealed class AgentApiClient(HttpClient httpClient)
             request.ProjectTag,
             request.UseKnowledge,
             request.MaxKnowledgeSnippets);
-        var content = await RequestAssistantTextAsync(
-            model,
-            "You are a .NET 10 coding assistant. Return concrete, compile-ready C# guidance.",
-            userPrompt,
-            cancellationToken);
+
+        string content;
+        try
+        {
+            content = await RequestAssistantTextAsync(
+                model,
+                "You are a .NET 10 coding assistant. Return concrete, compile-ready C# guidance.",
+                userPrompt,
+                cancellationToken);
+        }
+        catch (HttpRequestException)
+        {
+            return await CallLegacyChatAsync(request, cancellationToken);
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return await CallLegacyChatAsync(request, cancellationToken);
+        }
+        catch (JsonException)
+        {
+            return await CallLegacyChatAsync(request, cancellationToken);
+        }
 
         if (string.IsNullOrWhiteSpace(content))
         {
-            var legacyResponse = await httpClient.PostAsJsonAsync("/api/chat", request, cancellationToken);
-            legacyResponse.EnsureSuccessStatusCode();
-            return await legacyResponse.Content.ReadFromJsonAsync<ChatResponse>(cancellationToken);
+            return await CallLegacyChatAsync(request, cancellationToken);
         }
 
         return new ChatResponse(
@@ -45,29 +61,43 @@ public sealed class AgentApiClient(HttpClient httpClient)
             request.UseKnowledge,
             request.MaxKnowledgeSnippets);
 
-        var content = await RequestAssistantTextAsync(
-            model,
-            "You are a .NET 10 coding assistant. Return compile-ready C# only for requested scope.",
-            """
-            Generate solution output in this exact markdown shape:
-            ## Plan
-            - concise implementation steps
-            ## Code
-            ```csharp
-            // complete code
-            ```
-            ## Explanation
-            - key behavior notes
+        string content;
+        try
+        {
+            content = await RequestAssistantTextAsync(
+                model,
+                "You are a .NET 10 coding assistant. Return compile-ready C# only for requested scope.",
+                """
+                Generate solution output in this exact markdown shape:
+                ## Plan
+                - concise implementation steps
+                ## Code
+                ```csharp
+                // complete code
+                ```
+                ## Explanation
+                - key behavior notes
 
-            Task:
-            """ + Environment.NewLine + userTask,
-            cancellationToken);
+                Task:
+                """ + Environment.NewLine + userTask,
+                cancellationToken);
+        }
+        catch (HttpRequestException)
+        {
+            return await CallLegacyGenerateCodeAsync(request, cancellationToken);
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return await CallLegacyGenerateCodeAsync(request, cancellationToken);
+        }
+        catch (JsonException)
+        {
+            return await CallLegacyGenerateCodeAsync(request, cancellationToken);
+        }
 
         if (ShouldFallbackToLegacyCodeEndpoint(content))
         {
-            var legacyResponse = await httpClient.PostAsJsonAsync("/api/agent/generate-code", request, cancellationToken);
-            legacyResponse.EnsureSuccessStatusCode();
-            return await legacyResponse.Content.ReadFromJsonAsync<GenerateCodeResponse>(cancellationToken);
+            return await CallLegacyGenerateCodeAsync(request, cancellationToken);
         }
 
         var (plan, code, explanation) = ParseCodeResponse(content);
@@ -366,5 +396,23 @@ public sealed class AgentApiClient(HttpClient httpClient)
             || lower.Contains("dbcontext", StringComparison.Ordinal);
 
         return !hasCodeFence && !hasCSharpSignals;
+    }
+
+    private async Task<ChatResponse?> CallLegacyChatAsync(
+        ChatRequest request,
+        CancellationToken cancellationToken)
+    {
+        var legacyResponse = await httpClient.PostAsJsonAsync("/api/chat", request, cancellationToken);
+        legacyResponse.EnsureSuccessStatusCode();
+        return await legacyResponse.Content.ReadFromJsonAsync<ChatResponse>(cancellationToken);
+    }
+
+    private async Task<GenerateCodeResponse?> CallLegacyGenerateCodeAsync(
+        GenerateCodeRequest request,
+        CancellationToken cancellationToken)
+    {
+        var legacyResponse = await httpClient.PostAsJsonAsync("/api/agent/generate-code", request, cancellationToken);
+        legacyResponse.EnsureSuccessStatusCode();
+        return await legacyResponse.Content.ReadFromJsonAsync<GenerateCodeResponse>(cancellationToken);
     }
 }
