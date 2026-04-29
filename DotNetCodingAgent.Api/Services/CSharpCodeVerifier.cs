@@ -37,9 +37,36 @@ public sealed class CSharpCodeVerifier
         var taskLower = task.ToLowerInvariant();
         var codeLower = code.ToLowerInvariant();
 
+        var requestsEndpoint = taskLower.Contains("endpoint")
+                               || taskLower.Contains("route")
+                               || taskLower.Contains("mapget")
+                               || taskLower.Contains("/hello-world")
+                               || taskLower.Contains("hello-world");
+        if (requestsEndpoint && !codeLower.Contains("mapget("))
+        {
+            errors.Add("Task requires a GET endpoint (MapGet missing).");
+        }
+
         if (taskLower.Contains("minimal api") && !codeLower.Contains("mapget("))
         {
             errors.Add("Task requires minimal API endpoints (MapGet missing).");
+        }
+
+        if ((taskLower.Contains("/hello-world") || taskLower.Contains("hello-world")) &&
+            !codeLower.Contains("/hello-world"))
+        {
+            errors.Add("Task requires an endpoint mapped exactly to /hello-world.");
+        }
+
+        if ((taskLower.Contains("query param") || taskLower.Contains("query parameter") || taskLower.Contains("get param")) &&
+            !(codeLower.Contains("(string ") || codeLower.Contains("request.query")))
+        {
+            errors.Add("Task requires binding a query parameter in the endpoint handler.");
+        }
+
+        if (taskLower.Contains("hello world") && !codeLower.Contains("hello world"))
+        {
+            errors.Add("Task requires returning text that includes 'hello world'.");
         }
 
         if ((taskLower.Contains("ef core") || taskLower.Contains("entity framework")) &&

@@ -176,3 +176,14 @@ public sealed class TodoItem
 public sealed record CreateTodoRequest(string Title, bool IsDone = false);
 public sealed record UpdateTodoRequest(string Title, bool IsDone);
 ```
+
+User: Create a C# app with a simple endpoint called /hello-world that takes a get param and prints out hello world and the get param.
+Assistant:
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+
+app.MapGet("/hello-world", (string value) => Results.Ok($"hello world {value}"));
+
+app.Run();
+```

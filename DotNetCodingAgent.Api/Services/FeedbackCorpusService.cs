@@ -195,6 +195,11 @@ public sealed class FeedbackCorpusService(EvalFeedbackService evalFeedbackServic
         {
             hints.Add("For minimal API prompts include app.MapGet/app.MapPost routes and app.Run().");
         }
+        if ((lowerPrompt.Contains("/hello-world", StringComparison.Ordinal) || lowerPrompt.Contains("hello-world", StringComparison.Ordinal)) &&
+            (lowerPrompt.Contains("query param", StringComparison.Ordinal) || lowerPrompt.Contains("query parameter", StringComparison.Ordinal) || lowerPrompt.Contains("get param", StringComparison.Ordinal)))
+        {
+            hints.Add("Map GET /hello-world and bind a query parameter in the handler signature, then return hello world plus that value.");
+        }
         if (lowerPrompt.Contains("sqlite", StringComparison.Ordinal) || lowerDiagnostics.Contains("usesqlite", StringComparison.Ordinal))
         {
             hints.Add("Use EF Core with UseSqlite and a concrete Data Source connection string.");
@@ -224,13 +229,23 @@ public sealed class FeedbackCorpusService(EvalFeedbackService evalFeedbackServic
     private static string BuildRequiredMarkers(string prompt)
     {
         var lower = prompt.ToLowerInvariant();
-        var markers = new List<string> { "```csharp", "using", "public" };
+        var markers = new List<string> { "```csharp" };
 
         if (lower.Contains("minimal api", StringComparison.Ordinal))
         {
             markers.Add("MapGet(");
             markers.Add("MapPost(");
             markers.Add("app.Run()");
+        }
+        if (lower.Contains("/hello-world", StringComparison.Ordinal) || lower.Contains("hello-world", StringComparison.Ordinal))
+        {
+            markers.Add("/hello-world");
+            markers.Add("MapGet(");
+        }
+        if (lower.Contains("query param", StringComparison.Ordinal) || lower.Contains("query parameter", StringComparison.Ordinal) || lower.Contains("get param", StringComparison.Ordinal))
+        {
+            markers.Add("(string");
+            markers.Add("hello world");
         }
         if (lower.Contains("sqlite", StringComparison.Ordinal))
         {
@@ -277,6 +292,21 @@ public sealed class FeedbackCorpusService(EvalFeedbackService evalFeedbackServic
     private static string BuildExpectedOutput(string prompt)
     {
         var lower = prompt.ToLowerInvariant();
+        if ((lower.Contains("/hello-world", StringComparison.Ordinal) || lower.Contains("hello-world", StringComparison.Ordinal)) &&
+            (lower.Contains("query param", StringComparison.Ordinal) || lower.Contains("query parameter", StringComparison.Ordinal) || lower.Contains("get param", StringComparison.Ordinal)))
+        {
+            return """
+                ```csharp
+                var builder = WebApplication.CreateBuilder(args);
+                var app = builder.Build();
+
+                app.MapGet("/hello-world", (string value) => Results.Ok($"hello world {value}"));
+
+                app.Run();
+                ```
+                """;
+        }
+
         if (lower.Contains("minimal api", StringComparison.Ordinal) &&
             lower.Contains("sqlite", StringComparison.Ordinal))
         {

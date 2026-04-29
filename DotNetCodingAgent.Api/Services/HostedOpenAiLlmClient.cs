@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using DotNetCodingAgent.Api.Options;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -14,6 +15,8 @@ public sealed class HostedOpenAiLlmClient(
 {
     private static readonly TimeSpan ChatCompletionsAttemptTimeout = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan GenerateAttemptTimeout = TimeSpan.FromSeconds(14);
+    private static readonly TimeSpan GenerateAttemptTimeoutLatencySensitive = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan QuickGenerateAttemptTimeout = TimeSpan.FromSeconds(10);
     private readonly ModelBackendOptions _options = options.Value;
 
     public async Task<string> GenerateAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken)
@@ -81,32 +84,63 @@ public sealed class HostedOpenAiLlmClient(
 
     private async Task<string> GenerateViaTransformerEndpointAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken)
     {
+        var latencySensitive = IsLatencySensitivePrompt(userPrompt);
+        var firstAttemptTimeout = latencySensitive ? GenerateAttemptTimeoutLatencySensitive : GenerateAttemptTimeout;
+        if (latencySensitive)
+        {
+            var quickFirst = await TryGenerateViaTransformerQuickPathAsync(systemPrompt, userPrompt, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(quickFirst) && !IsLowConfidenceFallback(quickFirst))
+            {
+                return quickFirst;
+            }
+        }
+
         string first;
         try
         {
             first = await GenerateViaTransformerOnceAsync(
                 systemPrompt,
                 userPrompt,
-                maxTokens: 320,
-                temperature: 0.25,
-                topK: 72,
-                repetitionPenalty: 1.12,
+                maxTokens: latencySensitive ? 220 : 320,
+                temperature: latencySensitive ? 0.18 : 0.25,
+                topK: latencySensitive ? 56 : 72,
+                repetitionPenalty: latencySensitive ? 1.10 : 1.12,
                 minNewTokens: 48,
+                attemptTimeout: firstAttemptTimeout,
                 cancellationToken);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             logger.LogWarning(
                 "Transformer /generate attempt timed out after {TimeoutSeconds}s (first pass).",
-                GenerateAttemptTimeout.TotalSeconds);
+                firstAttemptTimeout.TotalSeconds);
+            var quickAttempt = await TryGenerateViaTransformerQuickPathAsync(systemPrompt, userPrompt, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(quickAttempt))
+            {
+                return quickAttempt;
+            }
+
             return BuildTimeoutRescueResponse(
                 "transformer.generate.first-pass-timeout",
-                $"Timeout after {GenerateAttemptTimeout.TotalSeconds:0}s while calling /generate.");
+                $"Timeout after {firstAttemptTimeout.TotalSeconds:0}s while calling /generate.");
         }
 
         if (!IsLowConfidenceFallback(first))
         {
             return first;
+        }
+
+        if (latencySensitive)
+        {
+            var quickAttempt = await TryGenerateViaTransformerQuickPathAsync(systemPrompt, userPrompt, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(quickAttempt))
+            {
+                return quickAttempt;
+            }
+
+            return FormatModelError(
+                "transformer.generate.low-confidence",
+                "The local model is currently under-confident for this prompt. Please retry with tighter constraints (language, framework, output format) while retraining continues.");
         }
 
         var retryPrompt = $"""
@@ -128,6 +162,7 @@ public sealed class HostedOpenAiLlmClient(
                 topK: 64,
                 repetitionPenalty: 1.10,
                 minNewTokens: 40,
+                attemptTimeout: GenerateAttemptTimeout,
                 cancellationToken);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -135,6 +170,12 @@ public sealed class HostedOpenAiLlmClient(
             logger.LogWarning(
                 "Transformer /generate attempt timed out after {TimeoutSeconds}s (retry pass).",
                 GenerateAttemptTimeout.TotalSeconds);
+            var quickAttempt = await TryGenerateViaTransformerQuickPathAsync(systemPrompt, userPrompt, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(quickAttempt))
+            {
+                return quickAttempt;
+            }
+
             return BuildTimeoutRescueResponse(
                 "transformer.generate.retry-timeout",
                 $"Timeout after {GenerateAttemptTimeout.TotalSeconds:0}s while calling /generate retry.");
@@ -158,6 +199,7 @@ public sealed class HostedOpenAiLlmClient(
         int topK,
         double repetitionPenalty,
         int minNewTokens,
+        TimeSpan attemptTimeout,
         CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "generate");
@@ -173,7 +215,7 @@ public sealed class HostedOpenAiLlmClient(
         });
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(GenerateAttemptTimeout);
+        timeoutCts.CancelAfter(attemptTimeout);
         using var response = await httpClient.SendAsync(request, timeoutCts.Token);
         var body = await response.Content.ReadAsStringAsync(timeoutCts.Token);
         if (!response.IsSuccessStatusCode)
@@ -188,7 +230,54 @@ public sealed class HostedOpenAiLlmClient(
             throw new InvalidOperationException("Hosted backend fallback /generate returned empty output.");
         }
 
-        return text;
+        return NormalizeTransformerOutput(text);
+    }
+
+    private static string NormalizeTransformerOutput(string text)
+    {
+        var trimmed = text.Trim();
+
+        var fenced = Regex.Match(trimmed, "```csharp\\s*(.*?)```", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        if (fenced.Success)
+        {
+            var code = fenced.Groups[1].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(code))
+            {
+                return $"```csharp\n{code}\n```";
+            }
+        }
+
+        var expectedOutputIndex = trimmed.IndexOf("[EXPECTED_OUTPUT]", StringComparison.OrdinalIgnoreCase);
+        if (expectedOutputIndex >= 0)
+        {
+            var afterExpected = trimmed[(expectedOutputIndex + "[EXPECTED_OUTPUT]".Length)..].Trim();
+            var expectedFence = Regex.Match(afterExpected, "```csharp\\s*(.*?)```", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+            if (expectedFence.Success)
+            {
+                var code = expectedFence.Groups[1].Value.Trim();
+                if (!string.IsNullOrWhiteSpace(code))
+                {
+                    return $"```csharp\n{code}\n```";
+                }
+            }
+        }
+
+        var builderIndex = trimmed.IndexOf("var builder = WebApplication.CreateBuilder(args);", StringComparison.OrdinalIgnoreCase);
+        if (builderIndex >= 0)
+        {
+            var runIndex = trimmed.IndexOf("app.Run();", builderIndex, StringComparison.OrdinalIgnoreCase);
+            if (runIndex > builderIndex)
+            {
+                var end = runIndex + "app.Run();".Length;
+                var snippet = trimmed[builderIndex..end].Trim();
+                if (!string.IsNullOrWhiteSpace(snippet))
+                {
+                    return $"```csharp\n{snippet}\n```";
+                }
+            }
+        }
+
+        return trimmed;
     }
 
     private static bool IsLowConfidenceFallback(string text)
@@ -210,6 +299,42 @@ public sealed class HostedOpenAiLlmClient(
                ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
     }
 
+    private async Task<string?> TryGenerateViaTransformerQuickPathAsync(
+        string systemPrompt,
+        string userPrompt,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var compactPrompt = $"""
+                Return one csharp code block first, then one short explanation.
+                Keep output concise and directly runnable.
+                
+                Task:
+                {ExtractTaskFocus(userPrompt)}
+                """;
+            return await GenerateViaTransformerOnceAsync(
+                systemPrompt,
+                compactPrompt,
+                maxTokens: 280,
+                temperature: 0.12,
+                topK: 56,
+                repetitionPenalty: 1.08,
+                minNewTokens: 20,
+                attemptTimeout: TimeSpan.FromSeconds(16),
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Quick-path transformer retry failed.");
+            return null;
+        }
+    }
+
     private string FormatModelError(string stage, string userMessage, string? technicalCause = null)
     {
         if (!_options.IncludeDetailedModelErrors)
@@ -226,5 +351,36 @@ public sealed class HostedOpenAiLlmClient(
             OpenAiModel={{_options.OpenAiModel}}
             Details={{details}}
             """;
+    }
+
+    private static bool IsLatencySensitivePrompt(string userPrompt)
+    {
+        if (string.IsNullOrWhiteSpace(userPrompt))
+        {
+            return false;
+        }
+
+        var lower = userPrompt.ToLowerInvariant();
+        return userPrompt.Length <= 2500
+               && (lower.Contains("/hello-world", StringComparison.Ordinal)
+                   || lower.Contains("hello-world", StringComparison.Ordinal)
+                   || lower.Contains("minimal api", StringComparison.Ordinal)
+                   || lower.Contains("endpoint", StringComparison.Ordinal)
+                   || lower.Contains("mapget", StringComparison.Ordinal));
+    }
+
+    private static string ExtractTaskFocus(string userPrompt)
+    {
+        const int maxLength = 500;
+        var markerIndex = userPrompt.IndexOf("Task:", StringComparison.OrdinalIgnoreCase);
+        if (markerIndex >= 0)
+        {
+            var taskSection = userPrompt[(markerIndex + "Task:".Length)..].Trim();
+            var sectionBreak = taskSection.IndexOf("\n\n", StringComparison.Ordinal);
+            var focused = sectionBreak > 0 ? taskSection[..sectionBreak].Trim() : taskSection;
+            return focused.Length > maxLength ? focused[..maxLength] : focused;
+        }
+
+        return userPrompt.Length > maxLength ? userPrompt[..maxLength] : userPrompt;
     }
 }

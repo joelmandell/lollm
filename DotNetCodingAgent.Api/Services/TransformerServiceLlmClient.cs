@@ -11,7 +11,7 @@ public sealed class TransformerServiceLlmClient(HttpClient httpClient, IOptions<
 
     public async Task<string> GenerateAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken)
     {
-        var request = new TransformerGenerateRequest(systemPrompt, userPrompt, 600, 0.2);
+        var request = new TransformerGenerateRequest(systemPrompt, userPrompt, DetermineMaxTokens(userPrompt), 0.2);
         HttpResponseMessage response;
         string body;
         try
@@ -74,4 +74,20 @@ public sealed class TransformerServiceLlmClient(HttpClient httpClient, IOptions<
         [property: JsonPropertyName("temperature")] double Temperature);
 
     private sealed record TransformerGenerateResponse(string Text);
+
+    private static int DetermineMaxTokens(string userPrompt)
+    {
+        if (string.IsNullOrWhiteSpace(userPrompt))
+        {
+            return 400;
+        }
+
+        var lower = userPrompt.ToLowerInvariant();
+        var latencySensitive = userPrompt.Length <= 1200
+                               && (lower.Contains("/hello-world", StringComparison.Ordinal)
+                                   || lower.Contains("hello-world", StringComparison.Ordinal)
+                                   || lower.Contains("minimal api", StringComparison.Ordinal)
+                                   || lower.Contains("endpoint", StringComparison.Ordinal));
+        return latencySensitive ? 240 : 600;
+    }
 }

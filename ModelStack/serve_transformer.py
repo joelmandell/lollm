@@ -173,7 +173,9 @@ class ModelRuntime:
             return best_text
 
         last_resort = self._last_resort_generate(user_prompt, max_tokens, top_k, repetition_penalty, min_new_tokens)
-        return last_resort if last_resort else self._fallback_response(user_prompt)
+        if last_resort:
+            return last_resort
+        return best_text if best_text else self._fallback_response(user_prompt)
 
     def _sample_once(
         self,
@@ -218,8 +220,14 @@ class ModelRuntime:
                     self.id_to_token[token_id] if 0 <= token_id < len(self.id_to_token) else self.id_to_token[0]
                     for token_id in new_compact_tokens
                 ]
-                preview = self.tokenizer.decode(raw_tokens).strip()
-                if preview:
+                preview = self.tokenizer.decode(raw_tokens)
+                preview_lower = preview.lower()
+                # Stop once a complete code answer is formed, but avoid clipping too early.
+                if preview.count("```") >= 2 and len(preview.strip()) >= 120:
+                    break
+                if "app.run();" in preview_lower and ("app.mapget(" in preview_lower or "app.mappost(" in preview_lower):
+                    break
+                if len(preview) >= 1200:
                     break
 
         new_compact_tokens = generated[len(ids) :]
@@ -307,6 +315,14 @@ class ModelRuntime:
 
         if "minimal api" in prompt and not ("mapget(" in output or "mappost(" in output):
             return False
+        if ("endpoint" in prompt or "/hello-world" in prompt or "hello-world" in prompt) and "mapget(" not in output:
+            return False
+        if ("/hello-world" in prompt or "hello-world" in prompt) and "/hello-world" not in output:
+            return False
+        if ("query param" in prompt or "query parameter" in prompt or "get param" in prompt) and "(string" not in output:
+            return False
+        if "hello world" in prompt and "hello world" not in output:
+            return False
         if "dbcontext" in prompt and "dbcontext" not in output:
             return False
 
@@ -338,7 +354,13 @@ class ModelRuntime:
             "}",
             ";",
         ]
-        if sum(1 for marker in required_signals if marker in lower) < 4:
+        has_classic_csharp_shape = sum(1 for marker in required_signals if marker in lower) >= 4
+        has_top_level_minimal_api_shape = (
+            "webapplication.createbuilder" in lower
+            and "app.run" in lower
+            and ("app.mapget" in lower or "app.mappost" in lower or "app.mapput" in lower or "app.mapdelete" in lower)
+        )
+        if not has_classic_csharp_shape and not has_top_level_minimal_api_shape:
             return False
 
         if lower.count("{") != lower.count("}"):
@@ -595,59 +617,6 @@ class ModelRuntime:
         return False
 
     def _fallback_response(self, user_prompt: str) -> str:
-        lower = user_prompt.lower()
-        if self._is_dotnet_prompt(user_prompt) and ("postgres" in lower or "npgsql" in lower):
-            return (
-                "```csharp\n"
-                "using Microsoft.EntityFrameworkCore;\n\n"
-                "var builder = WebApplication.CreateBuilder(args);\n"
-                "builder.Services.AddDbContext<TodoDbContext>(o => o.UseNpgsql(builder.Configuration.GetConnectionString(\"DefaultConnection\")));\n"
-                "var app = builder.Build();\n"
-                "app.MapGet(\"/todos\", async (TodoDbContext db) => await db.Todos.ToListAsync());\n"
-                "app.Run();\n\n"
-                "public sealed class TodoDbContext(DbContextOptions<TodoDbContext> options) : DbContext(options)\n"
-                "{\n"
-                "    public DbSet<TodoItem> Todos => Set<TodoItem>();\n"
-                "}\n\n"
-                "public sealed class TodoItem\n"
-                "{\n"
-                "    public int Id { get; set; }\n"
-                "    public string Title { get; set; } = string.Empty;\n"
-                "    public bool IsCompleted { get; set; }\n"
-                "}\n"
-                "```"
-            )
-        if self._is_dotnet_prompt(user_prompt) and "minimal api" in lower and "sqlite" in lower:
-            data_source = "Data Source=hello.db" if "hello.db" in lower else "Data Source=app.db"
-            return (
-                "```csharp\n"
-                "using Microsoft.EntityFrameworkCore;\n\n"
-                "var builder = WebApplication.CreateBuilder(args);\n"
-                f"builder.Services.AddDbContext<TodoDbContext>(o => o.UseSqlite(\"{data_source}\"));\n"
-                "var app = builder.Build();\n"
-                "app.MapGet(\"/todos\", async (TodoDbContext db) => await db.Todos.ToListAsync());\n"
-                "app.MapPost(\"/todos\", async (TodoItem todo, TodoDbContext db) => { db.Todos.Add(todo); await db.SaveChangesAsync(); return Results.Created($\"/todos/{todo.Id}\", todo); });\n"
-                "app.Run();\n\n"
-                "public sealed class TodoDbContext(DbContextOptions<TodoDbContext> options) : DbContext(options)\n"
-                "{\n"
-                "    public DbSet<TodoItem> Todos => Set<TodoItem>();\n"
-                "}\n\n"
-                "public sealed class TodoItem\n"
-                "{\n"
-                "    public int Id { get; set; }\n"
-                "    public string Title { get; set; } = string.Empty;\n"
-                "    public bool IsCompleted { get; set; }\n"
-                "}\n"
-                "```"
-            )
-        if self._is_dotnet_prompt(user_prompt):
-            return (
-                "```csharp\n"
-                "var builder = WebApplication.CreateBuilder(args);\n"
-                "var app = builder.Build();\n"
-                "app.Run();\n"
-                "```"
-            )
         return "I could not generate a reliable answer for this prompt."
 
     def _last_resort_generate(

@@ -1,0 +1,51 @@
+[PROMPT]
+Create a C# app with a simple endpoint called /hello-world that takes a get param and prints out hello world and the get param.
+
+[EXPECTED_OUTPUT]
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+
+app.MapGet("/hello-world", (string value) => Results.Ok($"hello world {value}"));
+
+app.Run();
+```
+
+[PROMPT]
+Create a .NET endpoint /hello-world that reads query parameter name and responds with hello world plus name.
+
+[EXPECTED_OUTPUT]
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+
+app.MapGet("/hello-world", (string name) => Results.Ok($"hello world {name}"));
+
+app.Run();
+```
+
+[PROMPT]
+Build Program.cs for ASP.NET Core minimal API with GET /hello-world and query param q. Return hello world and q.
+
+[EXPECTED_OUTPUT]
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+
+app.MapGet("/hello-world", (string q) => Results.Ok($"hello world {q}"));
+
+app.Run();
+```
+
+[PROMPT]
+Write minimal API code in C# where /hello-world accepts query parameter value and returns "hello world {value}".
+
+[EXPECTED_OUTPUT]
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+
+app.MapGet("/hello-world", (string value) => Results.Ok($"hello world {value}"));
+
+app.Run();
+```

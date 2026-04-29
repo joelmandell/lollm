@@ -162,3 +162,29 @@ public sealed class TodoItem
     public bool IsCompleted { get; set; }
 }
 ```
+
+[PROMPT]
+Create a C# app with a simple endpoint called /hello-world that takes a get param and prints out hello world and the get param.
+
+[EXPECTED_OUTPUT]
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+
+app.MapGet("/hello-world", (string value) => Results.Ok($"hello world {value}"));
+
+app.Run();
+```
+
+[PROMPT]
+Create a .NET minimal API endpoint /hello-world that reads query parameter name and returns hello world + name.
+
+[EXPECTED_OUTPUT]
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+
+app.MapGet("/hello-world", (string name) => Results.Ok($"hello world {name}"));
+
+app.Run();
+```
