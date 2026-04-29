@@ -8,7 +8,15 @@ public sealed class PromptIntelligenceService
         var lower = normalized.ToLowerInvariant();
 
         var intent = PromptIntent.General;
-        if (lower.Contains("generate code") || lower.Contains("write code") || lower.Contains("snippet") || lower.Contains("example"))
+        if (lower.Contains("generate code")
+            || lower.Contains("write code")
+            || lower.Contains("snippet")
+            || lower.Contains("example")
+            || lower.Contains("program.cs")
+            || lower.Contains("minimal api")
+            || lower.Contains("endpoint")
+            || lower.Contains("crud")
+            || lower.Contains("todo api"))
         {
             intent = PromptIntent.CodeGeneration;
         }

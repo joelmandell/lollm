@@ -9,7 +9,9 @@ builder.Services.AddHttpClient<AgentApiClient>((serviceProvider, httpClient) =>
 {
     var configuration = serviceProvider.GetRequiredService<IConfiguration>();
     var baseUrl = configuration["AgentApi:BaseUrl"] ?? "http://localhost:5101";
+    var timeoutSeconds = configuration.GetValue("AgentApi:TimeoutSeconds", 600);
     httpClient.BaseAddress = new Uri(baseUrl);
+    httpClient.Timeout = TimeSpan.FromSeconds(Math.Max(120, timeoutSeconds));
 });
 
 var app = builder.Build();

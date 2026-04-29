@@ -44,7 +44,7 @@ class GenerateRequest(BaseModel):
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     top_k: int = Field(default=40, ge=1, le=256)
     repetition_penalty: float = Field(default=1.1, ge=1.0, le=2.0)
-    min_new_tokens: int = Field(default=24, ge=0, le=512)
+    min_new_tokens: int = Field(default=48, ge=0, le=512)
 
 
 class GenerateResponse(BaseModel):
@@ -115,9 +115,10 @@ class ModelRuntime:
 
         candidates: list[str] = []
         decode_plan = [
-            (0.0, min(80, top_k), repetition_penalty),
-            (temperature, top_k, repetition_penalty),
-            (max(0.15, temperature + 0.05), min(80, top_k + 10), repetition_penalty + 0.05),
+            (max(0.35, temperature + 0.05), min(140, top_k + 30), repetition_penalty + 0.05),
+            (max(0.50, temperature + 0.20), min(160, top_k + 60), repetition_penalty + 0.08),
+            (max(0.65, temperature + 0.35), min(180, top_k + 90), repetition_penalty + 0.10),
+            (max(0.80, temperature + 0.50), min(200, top_k + 110), repetition_penalty + 0.12),
         ]
         for cand_temp, cand_top_k, cand_rep_penalty in decode_plan:
             text = self._sample_once(ids, max_tokens, cand_temp, cand_top_k, cand_rep_penalty, min_new_tokens)
@@ -126,10 +127,46 @@ class ModelRuntime:
         if not candidates:
             return self._fallback_response(user_prompt)
 
-        text = max(candidates, key=lambda candidate: self._score_candidate(user_prompt, candidate))
-        if text and not self._should_fallback(user_prompt, text):
-            return text
-        return self._fallback_response(user_prompt)
+        scored = sorted(
+            ((self._score_candidate(user_prompt, candidate), candidate) for candidate in candidates),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        best_score, best_text = scored[0]
+        if best_score >= 35:
+            return best_text
+
+        if self._is_dotnet_prompt(user_prompt):
+            constrained_prompt = (
+                user_prompt.strip()
+                + "\n\nHard constraints: return one csharp code block with complete .NET 10 implementation."
+                + " Avoid JavaScript or frontend frameworks."
+            )
+            constrained_ids = [
+                self.token_to_compact_id.get(token_id, 0)
+                for token_id in self.tokenizer.encode(constrained_prompt)
+            ] or [0]
+            constrained_candidates: list[str] = []
+            for cand_temp, cand_top_k, cand_rep_penalty in [
+                (0.45, min(180, top_k + 90), repetition_penalty + 0.08),
+                (0.60, min(200, top_k + 120), repetition_penalty + 0.10),
+                (0.75, min(220, top_k + 140), repetition_penalty + 0.12),
+                (0.90, min(240, top_k + 160), repetition_penalty + 0.15),
+            ]:
+                text = self._sample_once(constrained_ids, max_tokens, cand_temp, cand_top_k, cand_rep_penalty, max(min_new_tokens, 64))
+                if text:
+                    constrained_candidates.append(text)
+            if constrained_candidates:
+                constrained_scored = sorted(
+                    ((self._score_candidate(user_prompt, candidate), candidate) for candidate in constrained_candidates),
+                    key=lambda item: item[0],
+                    reverse=True,
+                )
+                constrained_best_score, constrained_best_text = constrained_scored[0]
+                if constrained_best_score > best_score:
+                    return constrained_best_text
+
+        return best_text if best_text else self._fallback_response(user_prompt)
 
     def _sample_once(
         self,
@@ -192,8 +229,12 @@ class ModelRuntime:
         intent = self._detect_intent(prompt)
         if len(text.strip()) >= 30:
             score += 20
+        if len(text.strip()) < 120:
+            score -= 40
+        elif len(text.strip()) > 500:
+            score += 15
         if "```csharp" in lower:
-            score += 25
+            score += 35
         csharp_markers = ["using ", "class ", "public ", "namespace ", "console.writeline", "dbcontext", "mapget", "results.ok", "async ", "await "]
         score += sum(8 for marker in csharp_markers if marker in lower)
         if re.search(r"\b(const|let|function)\b", lower):
@@ -210,13 +251,32 @@ class ModelRuntime:
             score += 20
         if intent == "record-dto" and ("record " in lower or "record class" in lower):
             score += 20
+        if "sqlite" in prompt and "usesqlite" in lower:
+            score += 30
+        if "hello.db" in prompt and "hello.db" in lower:
+            score += 25
+        if ("ef core" in prompt or "entity framework" in prompt) and "dbcontext" in lower:
+            score += 20
+        if "minimal api" in prompt and ("mapget" in lower or "mappost" in lower):
+            score += 20
+        if self._is_dotnet_prompt(prompt) and "```csharp" not in lower:
+            score -= 35
+        if re.search(r"\b(ember|svelte|react|vue|javascript|typescript)\b", lower) and any(
+            marker in prompt for marker in ["dotnet", ".net", "c#", "ef core", "dbcontext", "minimal api"]
+        ):
+            score -= 80
         return score
 
+    @staticmethod
+    def _is_dotnet_prompt(prompt: str) -> bool:
+        lower = prompt.lower()
+        return any(marker in lower for marker in [
+            "dotnet", ".net", "c#", "csharp", "asp.net", "minimal api", "ef core", "dbcontext"
+        ])
+
     def _policy_response(self, user_prompt: str) -> str | None:
-        intent = self._detect_intent(user_prompt.lower())
-        if not intent:
-            return None
-        return self._template_for_intent(intent)
+        # Keep runtime generation model-driven instead of deterministic templates.
+        return None
 
     def _template_for_intent(self, intent: str) -> str | None:
         if intent == "xunit-test":
@@ -413,7 +473,6 @@ class ModelRuntime:
 
     def _should_fallback(self, user_prompt: str, text: str) -> bool:
         prompt = user_prompt.lower()
-        intent = self._detect_intent(prompt)
         csharp_intent = any(
             marker in prompt
             for marker in [
@@ -426,23 +485,6 @@ class ModelRuntime:
             return False
 
         lower_text = text.lower()
-        if intent == "hello-world" and ("console.writeline" not in lower_text or "using system" not in lower_text):
-            return True
-        if intent == "efcore-dbcontext" and (
-            "dbcontext" not in lower_text
-            or "dbset<product>" not in lower_text
-            or "onmodelcreating" not in lower_text):
-            return True
-        if intent == "minimal-api" and ("mapget" not in lower_text or "results.ok" not in lower_text):
-            return True
-        if intent == "linq-filter" and "where(" not in lower_text:
-            return True
-        if intent == "di-registration" and ("addscoped" not in lower_text and "addsingleton" not in lower_text):
-            return True
-        if intent == "cancellation-token" and "cancellationtoken" not in lower_text:
-            return True
-        if intent == "record-dto" and "record " not in lower_text:
-            return True
         csharp_markers = ["using ", "class ", "public ", "namespace ", "console.writeline", "dbcontext", "mapget", "results.ok"]
         has_csharp = any(marker in lower_text for marker in csharp_markers)
         token_count = len(text.split())
@@ -460,21 +502,10 @@ class ModelRuntime:
         return False
 
     def _fallback_response(self, user_prompt: str) -> str:
-        intent = self._detect_intent(user_prompt.lower())
-        if intent:
-            template = self._template_for_intent(intent)
-            if template:
-                return template
         return (
             "```csharp\n"
-            "// Model is still warming up. Here is a safe C# starting template.\n"
-            "public static class Example\n"
-            "{\n"
-            "    public static void Run()\n"
-            "    {\n"
-            "        Console.WriteLine(\"Ready\");\n"
-            "    }\n"
-            "}\n"
+            "// Unable to produce a high-confidence answer from current model state.\n"
+            "// Retry with a more specific prompt and required output constraints.\n"
             "```"
         )
 

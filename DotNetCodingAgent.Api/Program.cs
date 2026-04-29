@@ -17,12 +17,30 @@ builder.Services.Configure<LocalModelOptions>(builder.Configuration.GetSection("
 builder.Services.Configure<ModelBackendOptions>(builder.Configuration.GetSection("ModelBackend"));
 
 builder.Services.AddSingleton<PromptIntelligenceService>();
+builder.Services.AddSingleton<CSharpCodeVerifier>();
 builder.Services.AddSingleton<LocalMarkovLlmClient>();
 builder.Services.AddSingleton<ITrainableLlmClient>(provider => provider.GetRequiredService<LocalMarkovLlmClient>());
 builder.Services.AddHttpClient<TransformerServiceLlmClient>((provider, client) =>
 {
     var options = provider.GetRequiredService<IOptions<ModelBackendOptions>>().Value;
     client.BaseAddress = new Uri(options.TransformerBaseUrl);
+    client.Timeout = TimeSpan.FromSeconds(Math.Max(10, options.TransformerTimeoutSeconds));
+});
+builder.Services.AddHttpClient<HostedOpenAiLlmClient>((provider, client) =>
+{
+    var options = provider.GetRequiredService<IOptions<ModelBackendOptions>>().Value;
+    var openAiBase = options.OpenAiBaseUrl?.Trim();
+    if (string.IsNullOrWhiteSpace(openAiBase))
+    {
+        openAiBase = "https://api.openai.com/v1";
+    }
+
+    if (!openAiBase.EndsWith('/'))
+    {
+        openAiBase += "/";
+    }
+
+    client.BaseAddress = new Uri(openAiBase);
     client.Timeout = TimeSpan.FromSeconds(Math.Max(10, options.TransformerTimeoutSeconds));
 });
 builder.Services.AddSingleton<ILlmClient, RoutedLlmClient>();
@@ -257,13 +275,21 @@ app.MapPost("/v1/chat/completions", async (
     var normalizedModel = (request.Model ?? "lollm-coder-001").Trim().ToLowerInvariant();
     var rubberDuckMode = normalizedModel.Contains("rubberduck", StringComparison.OrdinalIgnoreCase);
 
-    var response = await orchestrator.ChatAsync(
-        new ChatRequest(
-            composedPrompt,
-            UseKnowledge: true,
-            MaxKnowledgeSnippets: 8,
-            RubberDuckMode: rubberDuckMode),
-        cancellationToken);
+    var assistantOutput = IsCodePrompt(composedPrompt)
+        ? (await orchestrator.GenerateCodeAsync(
+            new GenerateCodeRequest(
+                composedPrompt,
+                UseKnowledge: true,
+                MaxKnowledgeSnippets: 3,
+                RubberDuckMode: rubberDuckMode),
+            cancellationToken)).Code
+        : (await orchestrator.ChatAsync(
+            new ChatRequest(
+                composedPrompt,
+                UseKnowledge: true,
+                MaxKnowledgeSnippets: 8,
+                RubberDuckMode: rubberDuckMode),
+            cancellationToken)).Answer;
     var completionId = $"chatcmpl-{Guid.NewGuid():N}";
     return Results.Ok(new
     {
@@ -276,7 +302,7 @@ app.MapPost("/v1/chat/completions", async (
             new
             {
                 index = 0,
-                message = new { role = "assistant", content = response.Answer },
+                message = new { role = "assistant", content = NormalizeAssistantText(assistantOutput) },
                 finish_reason = "stop"
             }
         },
@@ -303,13 +329,21 @@ app.MapPost("/v1/completions", async (
     var normalizedModel = (request.Model ?? "lollm-coder-001").Trim().ToLowerInvariant();
     var rubberDuckMode = normalizedModel.Contains("rubberduck", StringComparison.OrdinalIgnoreCase);
 
-    var response = await orchestrator.ChatAsync(
-        new ChatRequest(
-            promptText,
-            UseKnowledge: true,
-            MaxKnowledgeSnippets: 8,
-            RubberDuckMode: rubberDuckMode),
-        cancellationToken);
+    var assistantOutput = IsCodePrompt(promptText)
+        ? (await orchestrator.GenerateCodeAsync(
+            new GenerateCodeRequest(
+                promptText,
+                UseKnowledge: true,
+                MaxKnowledgeSnippets: 3,
+                RubberDuckMode: rubberDuckMode),
+            cancellationToken)).Code
+        : (await orchestrator.ChatAsync(
+            new ChatRequest(
+                promptText,
+                UseKnowledge: true,
+                MaxKnowledgeSnippets: 8,
+                RubberDuckMode: rubberDuckMode),
+            cancellationToken)).Answer;
     var completionId = $"cmpl-{Guid.NewGuid():N}";
     return Results.Ok(new
     {
@@ -321,7 +355,7 @@ app.MapPost("/v1/completions", async (
         {
             new
             {
-                text = response.Answer,
+                text = NormalizeAssistantText(assistantOutput),
                 index = 0,
                 finish_reason = "stop"
             }
@@ -348,9 +382,17 @@ app.MapPost("/v1/responses", async (
 
     var normalizedModel = (request.Model ?? "lollm-coder-001").Trim().ToLowerInvariant();
     var rubberDuckMode = normalizedModel.Contains("rubberduck", StringComparison.OrdinalIgnoreCase);
-    var response = await orchestrator.ChatAsync(
-        new ChatRequest(input, UseKnowledge: true, MaxKnowledgeSnippets: 8, RubberDuckMode: rubberDuckMode),
-        cancellationToken);
+    var assistantOutput = IsCodePrompt(input)
+        ? (await orchestrator.GenerateCodeAsync(
+            new GenerateCodeRequest(
+                input,
+                UseKnowledge: true,
+                MaxKnowledgeSnippets: 3,
+                RubberDuckMode: rubberDuckMode),
+            cancellationToken)).Code
+        : (await orchestrator.ChatAsync(
+            new ChatRequest(input, UseKnowledge: true, MaxKnowledgeSnippets: 8, RubberDuckMode: rubberDuckMode),
+            cancellationToken)).Answer;
 
     return Results.Ok(new
     {
@@ -366,7 +408,7 @@ app.MapPost("/v1/responses", async (
                 role = "assistant",
                 content = new[]
                 {
-                    new { @type = "output_text", text = response.Answer }
+                    new { @type = "output_text", text = NormalizeAssistantText(assistantOutput) }
                 }
             }
         }
@@ -387,6 +429,37 @@ static async Task InitializeKnowledgeAsync(WebApplication app)
     {
         await repository.AddSourceAsync(seedUrl, null, CancellationToken.None);
     }
+}
+
+static bool IsCodePrompt(string prompt)
+{
+    var lower = prompt.ToLowerInvariant();
+    return lower.Contains("code")
+        || lower.Contains("program.cs")
+        || lower.Contains("c#")
+        || lower.Contains("dotnet")
+        || lower.Contains(".net")
+        || lower.Contains("minimal api")
+        || lower.Contains("endpoint")
+        || lower.Contains("crud")
+        || lower.Contains("class ")
+        || lower.Contains("method ");
+}
+
+static string NormalizeAssistantText(string text)
+{
+    if (string.IsNullOrWhiteSpace(text))
+    {
+        return string.Empty;
+    }
+
+    var normalized = text.Trim();
+    if (normalized.StartsWith("[LocalModel]", StringComparison.Ordinal))
+    {
+        normalized = normalized["[LocalModel]".Length..].TrimStart();
+    }
+
+    return normalized;
 }
 
 public sealed record OpenAiChatMessage(string Role, string Content);

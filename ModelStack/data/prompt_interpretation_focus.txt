@@ -1,0 +1,178 @@
+User: Create a .NET minimal API for todos with EF Core and SQLite provider. Use Data Source=hello.db in Program.cs.
+Assistant:
+```csharp
+using Microsoft.EntityFrameworkCore;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddDbContext<TodoDbContext>(options =>
+    options.UseSqlite("Data Source=hello.db"));
+
+var app = builder.Build();
+app.MapGet("/todos", async (TodoDbContext db, CancellationToken ct) =>
+    await db.Todos.AsNoTracking().ToListAsync(ct));
+app.MapGet("/todos/{id:int}", async Task<IResult> (int id, TodoDbContext db, CancellationToken ct) =>
+    await db.Todos.FindAsync([id], ct) is { } todo ? Results.Ok(todo) : Results.NotFound());
+app.MapPost("/todos", async Task<IResult> (CreateTodoRequest request, TodoDbContext db, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Title))
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = ["Title is required."] });
+
+    var todo = new TodoItem { Title = request.Title.Trim(), IsDone = request.IsDone };
+    db.Todos.Add(todo);
+    await db.SaveChangesAsync(ct);
+    return Results.Created($"/todos/{todo.Id}", todo);
+});
+app.MapPut("/todos/{id:int}", async Task<IResult> (int id, UpdateTodoRequest request, TodoDbContext db, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Title))
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = ["Title is required."] });
+
+    var entity = await db.Todos.FindAsync([id], ct);
+    if (entity is null) return Results.NotFound();
+    entity.Title = request.Title.Trim();
+    entity.IsDone = request.IsDone;
+    await db.SaveChangesAsync(ct);
+    return Results.NoContent();
+});
+app.MapDelete("/todos/{id:int}", async Task<IResult> (int id, TodoDbContext db, CancellationToken ct) =>
+{
+    var entity = await db.Todos.FindAsync([id], ct);
+    if (entity is null) return Results.NotFound();
+    db.Todos.Remove(entity);
+    await db.SaveChangesAsync(ct);
+    return Results.NoContent();
+});
+app.Run();
+
+public sealed class TodoDbContext(DbContextOptions<TodoDbContext> options) : DbContext(options)
+{
+    public DbSet<TodoItem> Todos => Set<TodoItem>();
+}
+
+public sealed class TodoItem
+{
+    public int Id { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public bool IsDone { get; set; }
+}
+
+public sealed record CreateTodoRequest(string Title, bool IsDone = false);
+public sealed record UpdateTodoRequest(string Title, bool IsDone);
+```
+
+User: Build Program.cs for ASP.NET Core minimal API with EF Core, DbContext, and SQLite at Data Source=hello.db.
+Assistant:
+```csharp
+using Microsoft.EntityFrameworkCore;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddDbContext<TodoDbContext>(options =>
+    options.UseSqlite("Data Source=hello.db"));
+
+var app = builder.Build();
+app.MapGet("/todos", async (TodoDbContext db) => await db.Todos.AsNoTracking().ToListAsync());
+app.MapPost("/todos", async (CreateTodoRequest request, TodoDbContext db) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Title))
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = ["Title is required."] });
+
+    var todo = new TodoItem { Title = request.Title.Trim(), IsDone = request.IsDone };
+    db.Todos.Add(todo);
+    await db.SaveChangesAsync();
+    return Results.Created($"/todos/{todo.Id}", todo);
+});
+app.MapPut("/todos/{id:int}", async (int id, UpdateTodoRequest request, TodoDbContext db) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Title))
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = ["Title is required."] });
+    var todo = await db.Todos.FindAsync(id);
+    if (todo is null) return Results.NotFound();
+    todo.Title = request.Title.Trim();
+    todo.IsDone = request.IsDone;
+    await db.SaveChangesAsync();
+    return Results.NoContent();
+});
+app.MapDelete("/todos/{id:int}", async (int id, TodoDbContext db) =>
+{
+    var todo = await db.Todos.FindAsync(id);
+    if (todo is null) return Results.NotFound();
+    db.Todos.Remove(todo);
+    await db.SaveChangesAsync();
+    return Results.NoContent();
+});
+app.Run();
+
+public sealed class TodoDbContext(DbContextOptions<TodoDbContext> options) : DbContext(options)
+{
+    public DbSet<TodoItem> Todos => Set<TodoItem>();
+}
+
+public sealed class TodoItem
+{
+    public int Id { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public bool IsDone { get; set; }
+}
+
+public sealed record CreateTodoRequest(string Title, bool IsDone = false);
+public sealed record UpdateTodoRequest(string Title, bool IsDone);
+```
+
+User: Create EF Core + PostgreSQL Todo minimal API using UseNpgsql and full CRUD.
+Assistant:
+```csharp
+using Microsoft.EntityFrameworkCore;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddDbContext<TodoDbContext>(options =>
+    options.UseNpgsql("Host=localhost;Port=5432;Database=todos;Username=postgres;Password=postgres"));
+
+var app = builder.Build();
+app.MapGet("/todos", async (TodoDbContext db) => await db.Todos.AsNoTracking().ToListAsync());
+app.MapGet("/todos/{id:int}", async Task<IResult> (int id, TodoDbContext db) =>
+    await db.Todos.FindAsync(id) is { } todo ? Results.Ok(todo) : Results.NotFound());
+app.MapPost("/todos", async Task<IResult> (CreateTodoRequest request, TodoDbContext db) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Title))
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = ["Title is required."] });
+    var todo = new TodoItem { Title = request.Title.Trim(), IsDone = request.IsDone };
+    db.Todos.Add(todo);
+    await db.SaveChangesAsync();
+    return Results.Created($"/todos/{todo.Id}", todo);
+});
+app.MapPut("/todos/{id:int}", async Task<IResult> (int id, UpdateTodoRequest request, TodoDbContext db) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Title))
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = ["Title is required."] });
+    var todo = await db.Todos.FindAsync(id);
+    if (todo is null) return Results.NotFound();
+    todo.Title = request.Title.Trim();
+    todo.IsDone = request.IsDone;
+    await db.SaveChangesAsync();
+    return Results.NoContent();
+});
+app.MapDelete("/todos/{id:int}", async Task<IResult> (int id, TodoDbContext db) =>
+{
+    var todo = await db.Todos.FindAsync(id);
+    if (todo is null) return Results.NotFound();
+    db.Todos.Remove(todo);
+    await db.SaveChangesAsync();
+    return Results.NoContent();
+});
+app.Run();
+
+public sealed class TodoDbContext(DbContextOptions<TodoDbContext> options) : DbContext(options)
+{
+    public DbSet<TodoItem> Todos => Set<TodoItem>();
+}
+
+public sealed class TodoItem
+{
+    public int Id { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public bool IsDone { get; set; }
+}
+
+public sealed record CreateTodoRequest(string Title, bool IsDone = false);
+public sealed record UpdateTodoRequest(string Title, bool IsDone);
+```

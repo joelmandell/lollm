@@ -6,7 +6,8 @@ namespace DotNetCodingAgent.Api.Services;
 public sealed class RoutedLlmClient(
     IOptions<ModelBackendOptions> options,
     LocalMarkovLlmClient localClient,
-    TransformerServiceLlmClient transformerClient) : ILlmClient
+    TransformerServiceLlmClient transformerClient,
+    HostedOpenAiLlmClient hostedOpenAiClient) : ILlmClient
 {
     private readonly ModelBackendOptions _options = options.Value;
 
@@ -24,13 +25,18 @@ public sealed class RoutedLlmClient(
             return await transformerClient.GenerateAsync(systemPrompt, userPrompt, cancellationToken);
         }
 
-        try
+        if (provider == "openai")
+        {
+            return await hostedOpenAiClient.GenerateAsync(systemPrompt, userPrompt, cancellationToken);
+        }
+
+        // Hybrid mode is transformer-first without local fallback.
+        if (provider == "hybrid")
         {
             return await transformerClient.GenerateAsync(systemPrompt, userPrompt, cancellationToken);
         }
-        catch
-        {
-            return await localClient.GenerateAsync(systemPrompt, userPrompt, cancellationToken);
-        }
+
+        throw new InvalidOperationException(
+            $"Unsupported ModelBackend:Provider '{_options.Provider}'. Supported values: local, transformer, hybrid, openai.");
     }
 }
